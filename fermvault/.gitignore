@@ -1,0 +1,49 @@
+# .gitignore for FermVault Raspberry Pi Project
+
+# ------------------------------------
+# 1. PYTHON STANDARD IGNORES
+# ------------------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
+env/
+.venv/
+.python-version
+.idea/ # IDE files
+
+# Jupyter/IPython Notebook files
+.ipynb_checkpoints
+
+# C extensions
+*.so
+
+# ------------------------------------
+# 2. APPLICATION DATA (User Files)
+# ------------------------------------
+# These files are created by the user's application, NOT by the developer.
+# They are located in the user's home folder ($HOME/fermvault-data), 
+# but are listed here to catch any accidental commits.
+fermvault-data/
+
+# Specific data files that should never be committed (even if found 
+# accidentally in the repo root or another subfolder).
+fermvault_settings.json
+fermentation_data.json
+pid_tuning_log.csv
+
+# ------------------------------------
+# 3. BUILD / LOGS / DEVELOPER UTILITIES
+# ------------------------------------
+# Your private build utility script
+build.sh
+
+# Operating system junk files
+.DS_Store
+Thumbs.db
+
+# Log files created during development
+*.log
