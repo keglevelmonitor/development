@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Fermentation Vault
+Comment=Fermentation control and monitoring
+Path=PLACEHOLDER_PATH
+Exec=PLACEHOLDER_EXEC_PATH
+Icon=PLACEHOLDER_ICON_PATH
+Terminal=false
+Autostart=false
+Categories=X-Other;
