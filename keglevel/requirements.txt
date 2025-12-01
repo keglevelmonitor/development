@@ -1,2 +1,0 @@
-lgpio==0.2.2.0
-rpi-lgpio==0.6
