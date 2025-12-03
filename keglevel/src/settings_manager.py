@@ -1,5 +1,5 @@
 # keglevel app
-#
+# 
 # settings_manager.py
 import json
 import os
@@ -68,7 +68,10 @@ class SettingsManager:
         return {
             "notification_type": "None", "frequency": "Daily", "server_email": "", "server_password": "", 
             "email_recipient": "", "smtp_server": "", "smtp_port": "", "sms_number": "", 
-            "sms_carrier_gateway": "" 
+            "sms_carrier_gateway": "",
+            # --- NEW: Update Notification Default ---
+            "notify_on_update": True
+            # ----------------------------------------
         }
     
     # --- NEW: Default Status Request Settings ---
@@ -100,20 +103,60 @@ class SettingsManager:
             "flow_calibration_factors": [DEFAULT_K_FACTOR] * self.num_sensors,
             "metric_pour_ml": 355, "imperial_pour_oz": 12,
             "flow_calibration_notes": "", "flow_calibration_to_be_poured": 500.0,
+            "last_pour_averages": [0.0] * self.num_sensors,
             
-            # --- NEW: EULA/Support Settings ---
+            # --- NEW: Last Pour Volume Persistence ---
+            "last_pour_volumes": [0.0] * self.num_sensors,
+            # -----------------------------------------
+            
+            "force_numlock": False,
             "eula_agreed": False,
             "show_eula_on_launch": True,
-            # --- END NEW ---
-            
-            # --- NEW: Window Position Persistence ---
             "window_geometry": None,
-            # ----------------------------------------
-            
-            # --- NEW: Check Updates on Launch ---
-            "check_updates_on_launch": True 
-            # ------------------------------------
+            "check_updates_on_launch": True,
+            "notify_on_update": True
         }
+
+    # --- NEW METHODS for Last Pour Volume ---
+    def get_last_pour_volumes(self):
+        defaults = self._get_default_system_settings().get('last_pour_volumes')
+        vols = self.settings.get('system_settings', {}).get('last_pour_volumes', defaults)
+        if not isinstance(vols, list) or len(vols) != self.num_sensors:
+            return [0.0] * self.num_sensors
+        return [float(x) for x in vols]
+
+    def save_last_pour_volumes(self, volumes_list):
+        if len(volumes_list) == self.num_sensors:
+            self.settings.setdefault('system_settings', self._get_default_system_settings())['last_pour_volumes'] = volumes_list
+            self._save_all_settings()
+
+    # --- NEW METHODS for Num Lock ---
+    def get_force_numlock(self):
+        return self.get_system_settings().get('force_numlock', False)
+
+    def save_force_numlock(self, enabled):
+        sys_set = self.settings.get('system_settings', self._get_default_system_settings())
+        sys_set['force_numlock'] = bool(enabled)
+        self.settings['system_settings'] = sys_set
+        self._save_all_settings()
+        print(f"SettingsManager: Force Num Lock saved: {enabled}")
+
+    # --- NEW METHODS for Smart Flow Rate ---
+    def get_last_pour_averages(self):
+        defaults = self._get_default_system_settings().get('last_pour_averages')
+        avgs = self.settings.get('system_settings', {}).get('last_pour_averages', defaults)
+        
+        # Validation: Ensure it's a list of correct length
+        if not isinstance(avgs, list) or len(avgs) != self.num_sensors:
+            return [0.0] * self.num_sensors
+        
+        return [float(x) for x in avgs]
+
+    def save_last_pour_averages(self, averages_list):
+        if len(averages_list) == self.num_sensors:
+            self.settings.setdefault('system_settings', self._get_default_system_settings())['last_pour_averages'] = averages_list
+            self._save_all_settings()
+            # print(f"SettingsManager: Saved last pour averages.") # Optional logging
 
     def get_system_settings(self):
         defaults = self._get_default_system_settings() 
@@ -449,16 +492,22 @@ class SettingsManager:
                          print(f"Beverage Library: Error loading library. Contents corrupted. Using default.") 
                          library = {"beverages": self._get_default_beverage_library().get('beverages', [])}
                     
-                    # --- NEW: Migration Logic for SRM ---
+                    # --- NEW: Migration Logic for SRM (Missing Keys & Float->Int Conversion) ---
                     beverages = library.get('beverages', [])
                     modified = False
                     for b in beverages:
+                        # 1. Add missing key
                         if 'srm' not in b:
                             b['srm'] = None # Default to None (Standard Beer Color) if missing
                             modified = True
+                        
+                        # 2. Convert Float to Int
+                        elif isinstance(b['srm'], float):
+                            b['srm'] = int(b['srm'])
+                            modified = True
                     
                     if modified:
-                        print("SettingsManager: Migrated beverage library to include SRM keys.")
+                        print("SettingsManager: Migrated beverage library to ensure SRM is present and integer.")
                         self._save_beverage_library(library)
                     # ------------------------------------
 

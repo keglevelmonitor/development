@@ -52,9 +52,7 @@ class MainUIBase:
         self.ui_mode = self.settings_manager.get_system_settings().get('ui_mode', 'full') 
         self.is_full_mode = (self.ui_mode == 'full')
         
-        # --- NEW: Flag to prevent updates during rebuild ---
         self.is_rebuilding_ui = False
-        # ---------------------------------------------------
 
         self.ui_update_queue = queue.Queue()
         
@@ -65,11 +63,36 @@ class MainUIBase:
         self._apply_window_geometry(set_position=True)
             
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing_ui) 
+        
+        # --- Num Lock Logic ---
+        self.original_numlock_state = None
+        if IS_RASPBERRY_PI_MODE:
+            self.root.bind("<FocusIn>", self._enforce_numlock, add="+")
+            self.root.bind_class("Toplevel", "<FocusIn>", self._enforce_numlock, add="+")
+            if self.settings_manager.get_force_numlock():
+                try:
+                    result = subprocess.run(['numlockx', 'status'], capture_output=True, text=True)
+                    if "on" in result.stdout: self.original_numlock_state = "on"
+                    elif "off" in result.stdout: self.original_numlock_state = "off"
+                    subprocess.run(['numlockx', 'on'])
+                except Exception: pass
 
         # --- Primary UI Variables ---
         self.sensor_name_texts = [tk.StringVar() for _ in range(self.num_sensors)]
+        
+        self.flow_rate_label_widgets = [] 
+        self.flow_rate_value_labels = []  
+        self.last_pour_label_widgets = [] # NEW
+        self.last_pour_value_labels = []  # NEW
+        
         self.flow_rate_label_texts = [tk.StringVar(value="Flow rate L/min:") for _ in range(self.num_sensors)] 
         self.flow_rate_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
+        
+        # --- NEW: Last Pour Variables ---
+        self.last_pour_label_texts = [tk.StringVar(value="Last Pour:") for _ in range(self.num_sensors)]
+        self.last_pour_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
+        # --------------------------------
+        
         self.volume1_label_texts = [tk.StringVar() for _ in range(self.num_sensors)]
         self.volume1_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
         self.volume2_label_texts = [tk.StringVar() for _ in range(self.num_sensors)]
@@ -103,8 +126,11 @@ class MainUIBase:
         self.progressbar_styles_defined = False
         self.was_stable_before_pause = [False] * self.num_sensors
         self.sensor_is_actively_connected = [False] * self.num_sensors
-        self.last_known_average_mm = [None] * self.num_sensors
         self.last_known_remaining_liters = [None] * self.num_sensors
+        
+        # --- NEW: Cache for Last Pour Volumes (to survive refresh) ---
+        self.last_known_pour_volumes = [0.0] * self.num_sensors
+        # -----------------------------------------------------------
         
         self.workflow_app = None 
         
@@ -116,6 +142,22 @@ class MainUIBase:
         self._create_widgets()
         self._load_initial_ui_settings()
         self._poll_ui_update_queue()
+
+    def _enforce_numlock(self, event=None):
+        """
+        Called whenever a window gains focus. 
+        Forces Num Lock ON if setting is enabled.
+        """
+        if not IS_RASPBERRY_PI_MODE: return
+        
+        # Dynamic check: Only enforce if setting is currently True
+        if not self.settings_manager.get_force_numlock(): return
+
+        if event and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+             try:
+                 subprocess.Popen(['numlockx', 'on'])
+             except Exception:
+                 pass
 
     def _apply_window_geometry(self, set_position=False, force_default=False):
         """
@@ -301,7 +343,6 @@ class MainUIBase:
         action_buttons_frame = ttk.Frame(self.header_frame)
         action_buttons_frame.pack(side="right", padx=0, pady=0)
         
-        # Settings Dropdown
         self.settings_menubutton = ttk.Menubutton(action_buttons_frame, text="Settings", width=12)
         default_font = tkfont.nametofont("TkMenuFont")
         self.menu_heading_font = tkfont.Font(family=default_font['family'], size=default_font['size'], weight="bold")
@@ -309,7 +350,6 @@ class MainUIBase:
         self.settings_menubutton["menu"] = self.settings_menu
         self.settings_menubutton.pack(side="right", padx=(0, 0), pady=0) 
 
-        # Temperature Label
         if self.is_full_mode: temp_label_container = ttk.Frame(self.header_frame, width=120, height=26)
         else: temp_label_container = ttk.Frame(self.header_frame, width=200, height=26)
             
@@ -327,7 +367,6 @@ class MainUIBase:
         
         cols_per_row = 5
         
-        # --- DYNAMIC WIDGET SIZING ---
         if self.is_full_mode:
             grid_width = 380
             combo_width = 16
@@ -358,19 +397,16 @@ class MainUIBase:
             keg_dropdown = None
 
             if self.is_full_mode:
-                # --- FULL MODE: Side-by-Side ---
                 ttk.Label(name_frame, text=f"Tap {i + 1}:", style='Tap.Bold.TLabel').pack(side="left", padx=(0, 5))
                 keg_dropdown = ttk.Combobox(name_frame, textvariable=self.sensor_keg_selection_vars[i], state="readonly", width=combo_width)
                 keg_dropdown.pack(side="left", fill="x", expand=True)
             else:
-                # --- COMPACT MODE: Stacked ---
                 ttk.Label(name_frame, text=f"Tap {i + 1}", style='Tap.Bold.TLabel').pack(anchor="w")
                 keg_dropdown = ttk.Combobox(column_frame, textvariable=self.sensor_keg_selection_vars[i], state="readonly", width=combo_width)
                 keg_dropdown.pack(anchor="w", fill="x", pady=(0, 2))
 
-            # Bindings (Cleaned: No extra clicks/expand logic)
             keg_dropdown.bind("<<ComboboxSelected>>", lambda event, idx=i: self._handle_keg_selection_change(idx))
-            
+            keg_dropdown.bind("<Button-1>", self._on_combobox_click)
             self.sensor_keg_dropdowns[i] = keg_dropdown
 
             # 2. Beverage Metadata Display
@@ -397,15 +433,11 @@ class MainUIBase:
                                               anchor='nw', font=('TkDefaultFont', 11, 'italic'), justify=tk.LEFT,
                                               wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0') 
                 description_label.pack(anchor="w", fill="both", expand=True, pady=(5, 5)) 
-            
             else: 
-                # LITE MODE Metadata
                 metadata_line_frame = ttk.Frame(column_frame)
                 metadata_line_frame.pack(anchor="w", pady=(2, 0), fill="x")
-
                 ttk.Label(metadata_line_frame, text="ABV:", style='Metadata.Bold.TLabel').pack(side="left", padx=(0, 5))
                 ttk.Label(metadata_line_frame, textvariable=self.beverage_metadata_texts[i]['abv']).pack(side="left", anchor="w")
-
                 ttk.Label(metadata_line_frame, textvariable=self.beverage_metadata_texts[i]['ibu']).pack(side="right", anchor="e")
                 ttk.Label(metadata_line_frame, text="IBU:", style='Metadata.Bold.TLabel').pack(side="right", padx=(5, 2))
             
@@ -414,14 +446,33 @@ class MainUIBase:
             pb.pack(pady=(10,5), fill='x', expand=False); self.sensor_progressbars[i] = pb
             
             # 4. Measurements
+            # A. Flow Rate
             lidar_frame = ttk.Frame(column_frame); lidar_frame.pack(anchor="w", fill="x", pady=1)
-            ttk.Label(lidar_frame, textvariable=self.flow_rate_label_texts[i]).pack(side="left", padx=(0, 2))
-            ttk.Label(lidar_frame, textvariable=self.flow_rate_value_texts[i], width=val_width_large, anchor="w").pack(side="left", padx=(0,0)) 
+            lbl_title = ttk.Label(lidar_frame, textvariable=self.flow_rate_label_texts[i])
+            lbl_title.pack(side="left", padx=(0, 2))
+            self.flow_rate_label_widgets.append(lbl_title)
+            lbl_val = ttk.Label(lidar_frame, textvariable=self.flow_rate_value_texts[i], width=val_width_large, anchor="w")
+            lbl_val.pack(side="left", padx=(0,0)) 
+            self.flow_rate_value_labels.append(lbl_val)
             
+            # B. NEW: Last Pour
+            pour_track_frame = ttk.Frame(column_frame); pour_track_frame.pack(anchor="w", fill="x", pady=1)
+            
+            lbl_pour_title = ttk.Label(pour_track_frame, textvariable=self.last_pour_label_texts[i])
+            lbl_pour_title.pack(side="left", padx=(0, 2))
+            self.last_pour_label_widgets.append(lbl_pour_title)
+            
+            lbl_pour_val = ttk.Label(pour_track_frame, textvariable=self.last_pour_value_texts[i], width=val_width_large, anchor="w")
+            lbl_pour_val.pack(side="left", padx=(0,0))
+            self.last_pour_value_labels.append(lbl_pour_val)
+            # ---------------------
+            
+            # C. Volume Remaining
             vol1_frame = ttk.Frame(column_frame); vol1_frame.pack(anchor="w", fill="x", pady=1)
             ttk.Label(vol1_frame, textvariable=self.volume1_label_texts[i]).pack(side="left", padx=(0, 2))
             ttk.Label(vol1_frame, textvariable=self.volume1_value_texts[i], width=val_width_small, anchor="w").pack(side="left", padx=(0,0))
             
+            # D. Pours Remaining
             vol2_frame = ttk.Frame(column_frame); vol2_frame.pack(anchor="w", fill="x", pady=1)
             ttk.Label(vol2_frame, textvariable=self.volume2_label_texts[i]).pack(side="left", padx=(0, 2))
             ttk.Label(vol2_frame, textvariable=self.volume2_value_texts[i], width=val_width_small, anchor="w").pack(side="left", padx=(0,0))
@@ -431,9 +482,44 @@ class MainUIBase:
         notification_label_container.pack_propagate(False); notification_label_container.pack(side="bottom", fill="x", padx=10, pady=(5,5))
         self.notification_status_label = ttk.Label(notification_label_container, textvariable=self.notification_status_text, anchor="w", relief="sunken", padding=(5,2))
         self.notification_status_label.pack(fill='both', expand=True)
+
+    def _on_combobox_click(self, event):
+        """Forces the combobox list to scroll to the top when opened."""
+        try:
+            # Get the combobox widget
+            combo = event.widget
+            # Schedule the scroll adjustment to happen after the popdown is posted
+            # 100ms delay is usually sufficient for the popdown to be mapped
+            combo.after(100, lambda: self._scroll_combobox_to_top(combo))
+        except Exception:
+            pass
+
+    def _scroll_combobox_to_top(self, combo):
+        """Internal helper to access the popdown listbox and scroll it to the top."""
+        try:
+            # Use Tcl command to get the popdown window path associated with this combobox
+            # Note: _w gives the Tkinter widget name
+            popdown = combo.tk.eval(f'ttk::combobox::PopdownWindow {combo._w}')
+            
+            # The standard structure of a ttk combobox popdown contains a listbox at .f.l
+            listbox = f"{popdown}.f.l"
+            
+            # Call 'see 0' on the internal listbox widget to scroll to the first item
+            combo.tk.call(listbox, 'see', 0)
+        except Exception:
+            # Fail silently if internal structure differs (platform dependent, though reliable on Linux/Pi)
+            pass
                         
     def _load_initial_ui_settings(self):
         loaded_sensor_labels = self.settings_manager.get_sensor_labels()
+        
+        initial_logic_volumes = [None] * self.num_sensors
+        initial_pour_volumes = [0.0] * self.num_sensors # NEW
+        
+        if self.sensor_logic:
+            initial_logic_volumes = self.sensor_logic.last_known_remaining_liters
+            initial_pour_volumes = self.sensor_logic.last_pour_volumes # NEW
+
         for i in range(self.num_sensors):
             self.sensor_name_texts[i].set(loaded_sensor_labels[i])
             self.flow_rate_value_texts[i].set("Init...")
@@ -441,8 +527,19 @@ class MainUIBase:
             self.volume2_value_texts[i].set("Init...")
             self.sensor_is_actively_connected[i] = False
             self.was_stable_before_pause[i] = False
-            if self.sensor_progressbars[i]:
-                 self._do_update_sensor_stability_display(i, "Acquiring data...")
+            
+            # Load initial pour cache
+            if i < len(initial_pour_volumes):
+                self.last_known_pour_volumes[i] = initial_pour_volumes[i]
+            
+            logic_vol = initial_logic_volumes[i] if i < len(initial_logic_volumes) else None
+            
+            if logic_vol is not None:
+                self.last_known_remaining_liters[i] = logic_vol
+            else:
+                if self.sensor_progressbars[i]:
+                     self._do_update_sensor_stability_display(i, "Acquiring data...")
+
         self._populate_keg_dropdowns()
         self._populate_beverage_dropdowns()
         self._refresh_beverage_metadata()
@@ -533,19 +630,24 @@ class MainUIBase:
             unit_char = "F" if current_display_unit == "imperial" else "C"
             self.temperature_text.set(f"Temp: --.- {unit_char}")
 
-    def update_sensor_data_display(self, sensor_index, flow_rate_lpm, remaining_liters_float, status_string):
-        self.ui_update_queue.put(("update_sensor_data", (sensor_index, flow_rate_lpm, remaining_liters_float, status_string)))
+    def update_sensor_data_display(self, sensor_index, flow_rate_lpm, remaining_liters_float, status_string, last_pour_vol=None):
+        self.ui_update_queue.put(("update_sensor_data", (sensor_index, flow_rate_lpm, remaining_liters_float, status_string, last_pour_vol)))
 
-    def _do_update_sensor_data_display(self, sensor_index, flow_rate_lpm, remaining_liters_float, status_string):
+    def _do_update_sensor_data_display(self, sensor_index, flow_rate_lpm, remaining_liters_float, status_string, last_pour_vol=None):
         if not self.root.winfo_exists() or not (0 <= sensor_index < self.num_sensors): return
         
+        # --- SMART FLOW RATE / ERROR LOGIC ---
         if status_string == "Hardware Fault" or status_string == "Error" or status_string == "Missing" or status_string == "Sensor Unplugged":
-            # Use short label if compact
             lbl_flow = "Flow rate L/min:" if self.is_full_mode else "Flow:"
-            self.flow_rate_label_texts[sensor_index].set(lbl_flow) 
+            self.flow_rate_label_texts[sensor_index].set(lbl_flow)
             
-            self.flow_rate_value_texts[sensor_index].set("-- (Err)") # Shortened Error
+            try: self.flow_rate_value_labels[sensor_index].config(foreground='', font=('TkDefaultFont', 9))
+            except: pass
+            
+            self.flow_rate_value_texts[sensor_index].set("-- (Err)")
             self.volume1_value_texts[sensor_index].set("--"); self.volume2_value_texts[sensor_index].set("--")
+            self.last_pour_value_texts[sensor_index].set("--") 
+            
             self.last_known_remaining_liters[sensor_index] = None
             self.sensor_is_actively_connected[sensor_index] = False
             self._do_update_sensor_stability_display(sensor_index, "Acquiring data...")
@@ -553,14 +655,74 @@ class MainUIBase:
         
         self.sensor_is_actively_connected[sensor_index] = True
         
-        # --- FIXED: Shortened Flow Label for Compact Mode ---
-        lbl_flow = "Flow rate L/min:" if self.is_full_mode else "Flow:"
-        self.flow_rate_label_texts[sensor_index].set(lbl_flow)
-        # ----------------------------------------------------
+        # Determine Labels and Style based on Status
+        if status_string == "Pouring":
+            # ACTIVE POUR
+            lbl_text = "Flowing:" if not self.is_full_mode else "Flowing L/min:"
+            # FIX: Use shorter label for Compact Mode
+            pour_lbl_text = "Pouring:" if self.is_full_mode else "Pouring:" 
+            fg_color = "green"
+            try:
+                bold_font = ('TkDefaultFont', 10, 'bold')
+                self.flow_rate_value_labels[sensor_index].config(font=bold_font)
+                self.last_pour_value_labels[sensor_index].config(font=bold_font) 
+            except: pass
+        else:
+            # IDLE / NOMINAL
+            lbl_text = "Last Avg:" if not self.is_full_mode else "Last Avg L/min:"
+            # FIX: Use shorter label for Compact Mode to prevent clipping
+            pour_lbl_text = "Last Pour:" if self.is_full_mode else "Poured:"
+            fg_color = "" 
+            try:
+                # Revert to system default font (matches other labels)
+                self.flow_rate_value_labels[sensor_index].config(font='')
+                self.last_pour_value_labels[sensor_index].config(font='')
+            except: pass
+
+        self.flow_rate_label_texts[sensor_index].set(lbl_text)
+        self.last_pour_label_texts[sensor_index].set(pour_lbl_text)
+        
+        try:
+            self.flow_rate_value_labels[sensor_index].config(foreground=fg_color)
+            self.last_pour_value_labels[sensor_index].config(foreground=fg_color)
+        except: pass
         
         flow_rate_display = f"{flow_rate_lpm:.2f}" if flow_rate_lpm is not None else "0.00"
         self.flow_rate_value_texts[sensor_index].set(flow_rate_display)
         
+        # --- NEW: Update Last Pour Value with Unit Conversion ---
+        # Logic: If metric (ml), show integer (no decimal). If imperial (oz), show 1 decimal.
+        if last_pour_vol is not None:
+            self.last_known_pour_volumes[sensor_index] = last_pour_vol
+            
+            display_units = self.settings_manager.get_display_units()
+            if display_units == "imperial":
+                val = last_pour_vol / OZ_TO_LITERS 
+                unit = "oz"
+                val_str = f"{val:.1f}"
+            else:
+                val = last_pour_vol * 1000.0 
+                unit = "ml"
+                val_str = f"{val:.0f}" # Integer for ml
+                
+            self.last_pour_value_texts[sensor_index].set(f"{val_str} {unit}")
+        else:
+            cached = self.last_known_pour_volumes[sensor_index]
+            if cached > 0:
+                display_units = self.settings_manager.get_display_units()
+                if display_units == "imperial":
+                    val = cached / OZ_TO_LITERS
+                    unit = "oz"
+                    val_str = f"{val:.1f}"
+                else:
+                    val = cached * 1000.0
+                    unit = "ml"
+                    val_str = f"{val:.0f}" # Integer for ml
+                self.last_pour_value_texts[sensor_index].set(f"{val_str} {unit}")
+            else:
+                self.last_pour_value_texts[sensor_index].set("--")
+        
+        # Volume Updates (Existing Logic)
         if remaining_liters_float is not None: self.last_known_remaining_liters[sensor_index] = remaining_liters_float
         
         display_units = self.settings_manager.get_display_units()
@@ -583,7 +745,7 @@ class MainUIBase:
         else:
             self.flow_rate_value_texts[sensor_index].set("Init...")
             self.volume1_value_texts[sensor_index].set("Init..."); self.volume2_value_texts[sensor_index].set("Init...")
-
+            
     def update_sensor_stability_display(self, sensor_index, status_text_from_logic):
         self.ui_update_queue.put(("update_sensor_stability", (sensor_index, status_text_from_logic)))
 
@@ -877,16 +1039,9 @@ class MainUIBase:
                 else: column_frame.grid_remove()
 
     def _refresh_ui_for_settings_or_resume(self):
-        # 1. Update visibility (Grid placement)
         self._update_sensor_column_visibility()
-        
-        # 2. Force idle tasks to process so the grid is calculated BEFORE we resize window
         self.root.update_idletasks()
-        
-        # 3. Apply Dynamic Window Sizing (safely)
         self._apply_window_geometry(set_position=False)
-        
-        # 4. Standard Refresh Logic
         self._refresh_beverage_metadata()
         self._populate_beverage_dropdowns()
         
@@ -898,25 +1053,52 @@ class MainUIBase:
 
         for i in range(self.num_sensors):
             if i < displayed_taps_count:
-                # --- FIXED: Shortened labels for Compact Mode ---
+                if display_units == "imperial":
+                    pours_label_str = f"{pour_oz} oz pours:"
+                else:
+                    pours_label_str = f"{pour_ml} ml pours:"
+
                 if self.is_full_mode:
                     lbl_vol = "Gal remaining:" if display_units == "imperial" else "Liters remaining:"
-                    lbl_pours = f"{pour_oz} oz pours:" if display_units == "imperial" else f"{pour_ml} ml pours:"
+                    lbl_pours = pours_label_str
+                    # Full Mode
+                    lbl_last_pour = "Last Pour:"
                 else:
                     lbl_vol = "Vol:"
                     lbl_pours = "Pours:"
+                    # Compact Mode
+                    lbl_last_pour = "Poured:"
                 
                 self.volume1_label_texts[i].set(lbl_vol)
                 self.volume2_label_texts[i].set(lbl_pours)
-                # ------------------------------------------------
+                self.last_pour_label_texts[i].set(lbl_last_pour)
+                
+                # --- NEW: Refresh Last Pour Display from Cache (with integer logic for ml) ---
+                cached_pour = self.last_known_pour_volumes[i]
+                if cached_pour > 0:
+                    if display_units == "imperial":
+                        val = cached_pour / OZ_TO_LITERS
+                        unit = "oz"
+                        val_str = f"{val:.1f}"
+                    else:
+                        val = cached_pour * 1000.0
+                        unit = "ml"
+                        val_str = f"{val:.0f}" # Integer for ml
+                    self.last_pour_value_texts[i].set(f"{val_str} {unit}")
+                else:
+                    self.last_pour_value_texts[i].set("--")
+                # -------------------------------------------------
                 
                 effective_stability_status = "Acquiring data..."
-                if self.sensor_logic and self.sensor_logic.is_paused: effective_stability_status = "Paused"
-                elif self.last_known_remaining_liters[i] is None and self.sensor_is_actively_connected[i]: effective_stability_status = "Acquiring data..."
+                if self.sensor_logic and self.sensor_logic.is_paused: 
+                    effective_stability_status = "Paused"
+                elif self.last_known_remaining_liters[i] is not None:
+                    effective_stability_status = "Data stable"
+                
                 self._do_update_sensor_stability_display(i, effective_stability_status)
                 
                 if self.last_known_remaining_liters[i] is not None and not (self.sensor_logic and self.sensor_logic.is_paused):
-                    self._do_update_sensor_data_display(i, 0.0, self.last_known_remaining_liters[i], "Nominal")
+                    self._do_update_sensor_data_display(i, 0.0, self.last_known_remaining_liters[i], "Nominal", self.last_known_pour_volumes[i])
                 elif not (self.sensor_logic and self.sensor_logic.is_paused):
                     self.flow_rate_value_texts[i].set("Init...")
                     self.volume1_value_texts[i].set("Init..."); self.volume2_value_texts[i].set("Init...")
@@ -949,15 +1131,21 @@ class MainUIBase:
     def _on_closing_ui(self):
         print("UIManager: Closing application...")
         
-        # --- NEW: Save Window Position ---
+        # --- NEW: Restore Num Lock ---
+        if self.original_numlock_state == "off":
+            try:
+                subprocess.run(['numlockx', 'off'])
+                print("UIManager: Restored Num Lock to OFF.")
+            except Exception:
+                pass
+        # -----------------------------
+        
         if self.root and hasattr(self.root, 'winfo_exists') and self.root.winfo_exists():
             try:
-                # Saves string like "800x600+150+150"
                 current_geometry = self.root.geometry()
                 self.settings_manager.save_window_geometry(current_geometry)
             except Exception as e:
                 print(f"UIManager: Could not save window geometry: {e}")
-        # ---------------------------------
 
         current_sensor_names = [sv.get() for sv in self.sensor_name_texts]
         self.settings_manager.save_sensor_labels(current_sensor_names) 

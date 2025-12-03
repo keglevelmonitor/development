@@ -111,21 +111,27 @@ class SensorLogic:
         self.sensor_pins = FLOW_SENSOR_PINS[:self.num_sensors]
 
         # --- Flow Sensor Specific State ---
-        self.keg_ids_assigned = [None] * self.num_sensors # Store the assigned keg ID
-        self.keg_dispensed_liters = [0.0] * self.num_sensors # Local running dispensed volume for the KEG
+        self.keg_ids_assigned = [None] * self.num_sensors 
+        self.keg_dispensed_liters = [0.0] * self.num_sensors 
         self.current_flow_rate_lpm = [0.0] * self.num_sensors
         self.tap_is_active = [False] * self.num_sensors
         self.active_sensor_index = -1 
         self.last_pulse_count = [0] * self.num_sensors
         
-        # --- NEW: Calibration State and Data ---
+        # --- NEW: Smart Flow & Last Pour Tracking ---
+        self.last_pour_averages = self.settings_manager.get_last_pour_averages()
+        self.last_pour_volumes = self.settings_manager.get_last_pour_volumes() # NEW
+        
+        self.current_pour_volume = [0.0] * self.num_sensors
+        self.current_pour_duration = [0.0] * self.num_sensors
+        
+        self.sim_deduct_disabled = [False] * self.num_sensors
+        
         self._is_calibrating = False
         self._cal_target_tap = -1
         self._cal_start_pulse_count = 0
-        self._cal_current_session_liters = 0.0 # Tracks only the volume for the current calibration pour
-        # The user's target volume (e.g., 1000 for ml, 32 for oz)
+        self._cal_current_session_liters = 0.0 
         self._cal_target_volume_user_unit = 0.0 
-        # ----------------------------------------
         
         self.raw_readings_buffer = [[] for _ in range(self.num_sensors)] 
         self.loop_count = 0
@@ -133,12 +139,46 @@ class SensorLogic:
         self.is_paused = False
         self.last_known_remaining_liters = [None] * self.num_sensors
         
-        # FIX: Initialize the thread object here
         self.sensor_thread = None 
 
-        # Load starting volume and apply a forced initial calculation
         self._load_initial_volumes()
         
+    def _calculate_flow_metrics(self, sensor_index, pulses, time_interval, k_factor, status_override="Nominal", update_ui=True, persist_data=True):
+        
+        if k_factor == 0 or time_interval == 0:
+            flow_rate_lpm = 0.0
+            dispensed_liters_interval = 0.0
+        else:
+            flow_rate_lpm = (pulses / k_factor) / (time_interval / 60.0)
+            dispensed_liters_interval = pulses / k_factor 
+
+        self.keg_dispensed_liters[sensor_index] += dispensed_liters_interval
+        
+        if status_override == "Pouring":
+            self.current_pour_volume[sensor_index] += dispensed_liters_interval
+        
+        if persist_data:
+            keg_id = self.keg_ids_assigned[sensor_index]
+            if keg_id:
+                self.settings_manager.update_keg_dispensed_volume(keg_id, self.keg_dispensed_liters[sensor_index], pulses=pulses)
+        
+        keg = self.settings_manager.get_keg_by_id(self.keg_ids_assigned[sensor_index])
+        starting_volume = keg.get('calculated_starting_volume_liters', 0.0) if keg else 0.0 
+        remaining_liters = starting_volume - self.keg_dispensed_liters[sensor_index]
+        self.last_known_remaining_liters[sensor_index] = remaining_liters
+
+        if update_ui:
+            # --- DETERMINE DISPLAY VOLUME ---
+            if status_override == "Pouring":
+                # Show live counting up
+                vol_to_show = self.current_pour_volume[sensor_index]
+            else:
+                # Show last finished pour
+                vol_to_show = self.last_pour_volumes[sensor_index]
+                
+            self._update_ui_data(sensor_index, flow_rate_lpm, remaining_liters, status_override, vol_to_show)
+        
+        return flow_rate_lpm, dispensed_liters_interval, remaining_liters
     # --- NEW: Flow Calibration Methods ---
     def start_flow_calibration(self, tap_index, target_volume_user_unit_str):
         global global_pulse_counts
@@ -361,37 +401,69 @@ class SensorLogic:
         if hasattr(self, 'last_sent_ui_state'):
             self.last_sent_ui_state = [None] * self.num_sensors
 
-    def _update_ui_data(self, sensor_index, flow_rate_lpm, remaining_liters, status_string):
+    def _update_ui_data(self, sensor_index, flow_rate_lpm, remaining_liters, status_string, last_pour_vol=None):
         """Helper to send updates to the UI's queue. Includes debouncing to prevent UI flood."""
         
-        # Initialize the state tracker if it doesn't exist yet
         if not hasattr(self, 'last_sent_ui_state'):
             self.last_sent_ui_state = [None] * self.num_sensors
 
-        # Create a snapshot of the current data
-        current_state = (sensor_index, flow_rate_lpm, remaining_liters, status_string)
+        # Check if this exact data was already sent last time (added last_pour_vol to snapshot)
+        current_state = (sensor_index, flow_rate_lpm, remaining_liters, status_string, last_pour_vol)
 
-        # Check if this exact data was already sent last time
         if self.last_sent_ui_state[sensor_index] == current_state:
-            return # STOP: Do not spam the queue with identical data
+            return 
             
-        # Update the last sent state
         self.last_sent_ui_state[sensor_index] = current_state
 
         if self.ui_callbacks.get("update_sensor_data_cb"):
             self.ui_callbacks.get("update_sensor_data_cb")(
-                sensor_index, flow_rate_lpm, remaining_liters, status_string
+                sensor_index, flow_rate_lpm, remaining_liters, status_string, last_pour_vol
             )
         if self.ui_callbacks.get("update_sensor_stability_cb"):
+            is_stable = status_string in ["Nominal", "Pouring", "Idle"]
             self.ui_callbacks.get("update_sensor_stability_cb")(
-                sensor_index, "Data stable" if status_string == "Nominal" else "Acquiring data..."
+                sensor_index, "Data stable" if is_stable else "Acquiring data..."
             )
+
+    def _get_default_system_settings(self):
+        return {
+            "display_units": "metric", "displayed_taps": 5, "ds18b20_ambient_sensor": "unassigned", 
+            "ui_mode": "lite", "autostart_enabled": False, 
+            "launch_workflow_on_start": False,
+            "flow_calibration_factors": [DEFAULT_K_FACTOR] * self.num_sensors,
+            "metric_pour_ml": 355, "imperial_pour_oz": 12,
+            "flow_calibration_notes": "", "flow_calibration_to_be_poured": 500.0,
+            "last_pour_averages": [0.0] * self.num_sensors,
+            
+            # --- NEW: Last Pour Volume Persistence ---
+            "last_pour_volumes": [0.0] * self.num_sensors,
+            # -----------------------------------------
+            
+            "force_numlock": False,
+            "eula_agreed": False,
+            "show_eula_on_launch": True,
+            "window_geometry": None,
+            "check_updates_on_launch": True,
+            "notify_on_update": True
+        }
+
+    # --- NEW METHODS for Last Pour Volume ---
+    def get_last_pour_volumes(self):
+        defaults = self._get_default_system_settings().get('last_pour_volumes')
+        vols = self.settings.get('system_settings', {}).get('last_pour_volumes', defaults)
+        if not isinstance(vols, list) or len(vols) != self.num_sensors:
+            return [0.0] * self.num_sensors
+        return [float(x) for x in vols]
+
+    def save_last_pour_volumes(self, volumes_list):
+        if len(volumes_list) == self.num_sensors:
+            self.settings.setdefault('system_settings', self._get_default_system_settings())['last_pour_volumes'] = volumes_list
+            self._save_all_settings()
 
     def _sensor_loop(self):
         global global_pulse_counts
         global last_check_time
         
-        # Initialize check times for the first run
         if all(t == 0.0 for t in last_check_time):
              current_time = time.time()
              for i in range(len(FLOW_SENSOR_PINS)): last_check_time[i] = current_time
@@ -401,164 +473,126 @@ class SensorLogic:
                 time.sleep(0.5)
                 continue
                 
-            # If we are actively calibrating, we only process the target tap and bypass flow meter lock logic
             if self._is_calibrating and self._cal_target_tap != -1:
-                 # Ensure main loop processes data for the current cal target
                  self.active_sensor_index = self._cal_target_tap 
                  self.tap_is_active[self._cal_target_tap] = True
                  
             # --- BEGIN STANDARD MONITORING LOGIC ---
-            
             current_time = time.time()
             displayed_taps_count = self.settings_manager.get_displayed_taps()
-            
-            # Get the current calibration factors from settings
             k_factors = self.settings_manager.get_flow_calibration_factors()
             
-            # 1. Check for new activity or maintain lock
             new_active_sensor_index = -1
-            
-            # Skip new lock search if currently calibrating
             if not self._is_calibrating and self.active_sensor_index == -1:
-                # Search for a new active tap
                 for i in range(displayed_taps_count):
-                    # Calculate pulses since last check (and the time interval)
                     time_interval = current_time - last_check_time[i]
                     pulses_in_interval = global_pulse_counts[i] - self.last_pulse_count[i]
-                    
                     if pulses_in_interval >= FLOW_PULSES_FOR_ACTIVITY and time_interval > 0:
                         new_active_sensor_index = i
                         break
             elif not self._is_calibrating and self.active_sensor_index != -1:
-                # Keep the lock on the current active tap
                 new_active_sensor_index = self.active_sensor_index
                 
-            # If currently calibrating, trust the cal target as the active index
             if self._is_calibrating:
                 self.active_sensor_index = self._cal_target_tap
             else:
                 self.active_sensor_index = new_active_sensor_index
             
-            # 2. Process all taps, but only calculate flow for the active one
             for i in range(displayed_taps_count):
-                
                 time_interval = current_time - last_check_time[i]
                 pulses_in_interval = global_pulse_counts[i] - self.last_pulse_count[i]
                 
                 is_currently_active = (i == self.active_sensor_index)
                 is_currently_calibrating_target = self._is_calibrating and self._cal_target_tap == i
+                
+                persist = not self.sim_deduct_disabled[i]
 
                 if is_currently_active and time_interval > 0 and pulses_in_interval > 0:
                     k_factor = k_factors[i]
                     
+                    if not self.tap_is_active[i]:
+                        self.current_pour_volume[i] = 0.0
+                        self.current_pour_duration[i] = 0.0
+                    
+                    self.current_pour_duration[i] += time_interval
+
                     if is_currently_calibrating_target:
-                        # CALIBRATING: Calculate metrics without persisting to keg
-                        # NOTE: No stopping logic should run for this tap while this flag is True.
                         self._calculate_calibration_metrics(i, pulses_in_interval, time_interval, k_factor)
                         self.tap_is_active[i] = True
                     else:
-                        # ACTIVE: Process flow data and persist to keg
-                        self._process_flow_data(i, pulses_in_interval, time_interval, k_factor)
+                        self._process_flow_data(i, pulses_in_interval, time_interval, k_factor, status_override="Pouring", persist_data=persist)
                         self.tap_is_active[i] = True
                 
-                # --- FIX START: Modify STOPPED/LOCK RELEASE logic ---
-                # Check for stopping only if it was active AND it is NOT the calibration target.
                 elif self.tap_is_active[i] and not is_currently_calibrating_target: 
-                    
-                    # If pulse count is low, release the lock (Standard Stop Condition)
                     if pulses_in_interval <= FLOW_PULSES_FOR_STOPPED:
                         
-                        # Stop Logic: Final calculation, then release lock
                         k_factor = k_factors[i]
-                        self._process_flow_data(i, pulses_in_interval, time_interval, k_factor)
+                        flow_rate, liters_interval, _ = self._calculate_flow_metrics(i, pulses_in_interval, time_interval, k_factor, status_override="Idle", persist_data=persist, update_ui=True)
                         
-                        self.tap_is_active[i] = False
-                        self.active_sensor_index = -1 # Release lock
-                        self._update_ui_data(i, 0.0, self.last_known_remaining_liters[i], "Nominal")
-                        print(f"SensorLogic: Tap {i+1} stopped. Lock released.")
+                        self.current_pour_duration[i] += time_interval
+                        self.current_pour_volume[i] += liters_interval
                         
-                        # CRITICAL FIX: Save dispensed volumes to JSON here, once flow has stopped.
-                        self.settings_manager.save_all_keg_dispensed_volumes()
+                        total_seconds = self.current_pour_duration[i]
+                        total_liters = self.current_pour_volume[i]
+                        
+                        if total_seconds > 0 and total_liters > 0.06:
+                            avg_lpm = total_liters / (total_seconds / 60.0)
+                            self.last_pour_averages[i] = avg_lpm
+                            self.settings_manager.save_last_pour_averages(self.last_pour_averages)
+                            
+                            # --- NEW: Save Last Pour Volume ---
+                            self.last_pour_volumes[i] = total_liters
+                            self.settings_manager.save_last_pour_volumes(self.last_pour_volumes)
+                            # ----------------------------------
+                        
+                        # Use Idle update with FINAL saved values
+                        self._update_ui_data(i, self.last_pour_averages[i], self.last_known_remaining_liters[i], "Idle", self.last_pour_volumes[i])
 
-                    # If it was active but lost lock and pulses are NOT low (e.g., tap changed or debouncing)
+                        if not persist:
+                            keg_id = self.keg_ids_assigned[i]
+                            if keg_id:
+                                keg = self.settings_manager.get_keg_by_id(keg_id)
+                                if keg:
+                                    self.keg_dispensed_liters[i] = keg.get('current_dispensed_liters', 0.0)
+                                    start_vol = keg.get('calculated_starting_volume_liters', 0.0)
+                                    self.last_known_remaining_liters[i] = start_vol - self.keg_dispensed_liters[i]
+                                    # Force UI update with reverted values
+                                    self._update_ui_data(i, self.last_pour_averages[i], self.last_known_remaining_liters[i], "Idle", self.last_pour_volumes[i])
+                            
+                            self.sim_deduct_disabled[i] = False
+                        else:
+                            self.settings_manager.save_all_keg_dispensed_volumes()
+
+                        self.tap_is_active[i] = False
+                        self.active_sensor_index = -1 
+                        print(f"SensorLogic: Tap {i+1} stopped. Avg: {self.last_pour_averages[i]:.2f} LPM.")
+
                     elif not is_currently_active:
-                         # Release lock for this tap if another tap grabbed it, without logging 'stopped'
                          self.tap_is_active[i] = False
                          self.active_sensor_index = -1
-                         self._update_ui_data(i, 0.0, self.last_known_remaining_liters[i], "Nominal")
+                         self._update_ui_data(i, self.last_pour_averages[i], self.last_known_remaining_liters[i], "Idle", self.last_pour_volumes[i])
 
-
-                # If the tap is the CALIBRATION TARGET, it just keeps monitoring the pulse count, 
-                # but the `tap_is_active` flag remains true until `stop_flow_calibration` is called from the UI.
                 elif is_currently_calibrating_target:
-                    # Target is active but pulses are 0. Just update last_pulse_count and continue.
-                    # This prevents the Tap Stopped message from appearing.
                     pass
-                # --- FIX END: Modify STOPPED/LOCK RELEASE logic ---
                 
                 elif not self.tap_is_active[i]:
-                    # IDLE: Only check conditional notifications and refresh UI total
-                    self._update_ui_data(i, 0.0, self.last_known_remaining_liters[i], "Nominal")
+                    # IDLE LOOP: Send stored values
+                    self._update_ui_data(i, self.last_pour_averages[i], self.last_known_remaining_liters[i], "Idle", self.last_pour_volumes[i])
                     self._check_conditional_notification(i)
 
-                # Update state variables for next iteration
                 self.last_pulse_count[i] = global_pulse_counts[i]
                 last_check_time[i] = current_time
 
             self.notification_service.check_and_send_temp_notification()
-            
-            # --- END STANDARD MONITORING LOGIC ---
-                
             time.sleep(READING_INTERVAL_SECONDS)
 
         print("SensorLogic: Sensor loop ended.")
 
-    def _calculate_flow_metrics(self, sensor_index, pulses, time_interval, k_factor):
-        """Helper to calculate flow rate, dispensed volume, and remaining volume, and persist the dispensed volume."""
-        
-        if k_factor == 0 or time_interval == 0:
-            flow_rate_lpm = 0.0
-            dispensed_liters_interval = 0.0
-        else:
-            # Flow Rate (L/min) = (Pulses / K-Factor) / (Time_Interval / 60)
-            flow_rate_lpm = (pulses / k_factor) / (time_interval / 60.0)
-            # Dispensed Liters = Pulses / K-Factor
-            dispensed_liters_interval = pulses / k_factor 
-
-        # Update local running dispensed totals
-        self.keg_dispensed_liters[sensor_index] += dispensed_liters_interval
-        
-        # PERSISTENCE: Save the new accumulated total dispensed volume AND PULSES to the Keg in MEMORY
-        keg_id = self.keg_ids_assigned[sensor_index]
-        if keg_id:
-            # This updates the keg_map in SettingsManager IN MEMORY only (no disk write).
-            # Pass the raw pulses for this interval to accumulate them
-            self.settings_manager.update_keg_dispensed_volume(keg_id, self.keg_dispensed_liters[sensor_index], pulses=pulses)
-        
-        # Calculate Remaining Volume = Starting Volume - Total Dispensed Volume
-        keg = self.settings_manager.get_keg_by_id(keg_id)
-        
-        # FIX: Ensure calculation uses the new key for the STARTING VOLUME
-        starting_volume = keg.get('calculated_starting_volume_liters', 0.0) if keg else 0.0 
-        
-        remaining_liters = starting_volume - self.keg_dispensed_liters[sensor_index]
-        
-        # UPDATED: Removed max(0.0, ...) clamp. 
-        # Allows remaining_liters to go negative if dispensed > start.
-        self.last_known_remaining_liters[sensor_index] = remaining_liters
-
-        # Update UI
-        self._update_ui_data(sensor_index, flow_rate_lpm, remaining_liters, "Nominal")
-        
-        return flow_rate_lpm, dispensed_liters_interval, remaining_liters
-
-    def _process_flow_data(self, sensor_index, pulses, time_interval, k_factor):
-        """Calculates flow rate, dispensed volume, and remaining volume, and persists the dispensed volume."""
-        
-        # Pass 'pulses' to the calculator so it can be sent to settings manager
-        flow_rate_lpm, dispensed_liters_interval, remaining_liters = self._calculate_flow_metrics(sensor_index, pulses, time_interval, k_factor)
-
-        # Check for volume-based conditional notification
+    def _process_flow_data(self, sensor_index, pulses, time_interval, k_factor, status_override="Nominal", persist_data=True):
+        """Wrapper for calculating metrics and checking alerts."""
+        flow_rate_lpm, dispensed_liters_interval, remaining_liters = self._calculate_flow_metrics(
+            sensor_index, pulses, time_interval, k_factor, status_override=status_override, persist_data=persist_data
+        )
         self._check_conditional_notification(sensor_index, force_check=True)
 
     def _check_conditional_notification(self, sensor_index, force_check=False):
@@ -580,6 +614,84 @@ class SensorLogic:
             reset_threshold = cond_notif_threshold_liters * 1.25
             if sent_status_list[sensor_index] and remaining_liters > reset_threshold:
                 self.settings_manager.update_conditional_sent_status(sensor_index, False)
+                
+    def simulate_pour(self, sensor_index, volume_liters, flow_rate_lpm, deduct_volume=True):
+        """
+        Starts a background thread to simulate a pour.
+        deduct_volume: If False, the volume will visually drop but revert after the pour.
+        """
+        if not (0 <= sensor_index < self.num_sensors):
+            print(f"Simulation Error: Invalid sensor index {sensor_index}")
+            return
+            
+        # Set the flag for the main loop to see
+        self.sim_deduct_disabled[sensor_index] = not deduct_volume
+            
+        # Launch simulation thread
+        threading.Thread(
+            target=self._run_simulation,
+            args=(sensor_index, volume_liters, flow_rate_lpm),
+            daemon=True
+        ).start()
+
+    def _run_simulation(self, sensor_index, volume_liters, flow_rate_lpm):
+        """
+        Internal loop that increments the global pulse count to mimic a real pour.
+        """
+        global global_pulse_counts
+        
+        # 1. Calculate parameters
+        k_factor = self.settings_manager.get_flow_calibration_factors()[sensor_index]
+        if k_factor <= 0:
+            print(f"Simulation Error: K-Factor is 0 for tap {sensor_index+1}")
+            return
+
+        total_pulses = int(volume_liters * k_factor)
+        duration_minutes = volume_liters / flow_rate_lpm
+        duration_seconds = duration_minutes * 60
+        
+        if duration_seconds <= 0: return
+
+        # Pulses per second
+        pps = total_pulses / duration_seconds
+        # Sleep interval (aim for ~10 updates per second for smoothness)
+        update_interval = 0.1 
+        pulses_per_step = int(pps * update_interval)
+        
+        # If flow is very slow, ensure at least 1 pulse per step occasionally
+        # but for simplicity, we'll just track float accumulation and add int pulses
+        
+        print(f"--- STARTING SIMULATION: Tap {sensor_index+1} ---")
+        print(f"Target: {volume_liters}L @ {flow_rate_lpm} LPM")
+        print(f"Total Pulses: {total_pulses} over {duration_seconds:.1f}s")
+        
+        current_pulse_accumulation = 0.0
+        pulses_added = 0
+        start_time = time.time()
+        
+        while pulses_added < total_pulses and self._running:
+            step_start = time.time()
+            
+            # Calculate how many pulses to add this step
+            current_pulse_accumulation += (pps * update_interval)
+            
+            to_add = int(current_pulse_accumulation)
+            if to_add > 0:
+                global_pulse_counts[sensor_index] += to_add
+                current_pulse_accumulation -= to_add
+                pulses_added += to_add
+            
+            # Sleep remainder of interval
+            elapsed = time.time() - step_start
+            sleep_time = update_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            
+            # Safety timeout
+            if (time.time() - start_time) > (duration_seconds + 5):
+                break
+                
+        print(f"--- SIMULATION COMPLETE: Tap {sensor_index+1} ---")
                 
     # --- SAFETY CLEANUP METHOD ---
     def cleanup_gpio(self):

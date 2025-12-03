@@ -29,18 +29,21 @@ class NotificationService:
         self._scheduler_event = threading.Event()
         self.last_notification_sent_time = 0
         
-        # --- NEW: Status Request Variables ---
+        # --- NEW: Update Check Timer ---
+        self.last_update_check_time = 0
+        # -------------------------------
+        
+        # Status Request Variables
         self._status_request_listener_thread = None
         self._status_request_running = False
-        self._status_request_interval_seconds = 60 # Check every minute
-        # --- END NEW ---
+        self._status_request_interval_seconds = 60 
         
         self._last_error_time = {
             "push": 0.0,
             "volume": 0.0,
             "temperature": 0.0
         }
-
+        
     def _get_interval_seconds(self, frequency_str):
         if frequency_str == "Hourly": return 3600
         elif frequency_str == "Daily": return 3600 * 24
@@ -551,6 +554,43 @@ class NotificationService:
         except Exception as e:
             self._report_config_error("status_request", f"Unexpected Status Request Error: {e}", False)
 
+    # --- NEW: Check and Notify Update ---
+    def _check_and_notify_update(self):
+        """Checks for updates and sends an email if enabled and available."""
+        notif_settings = self.settings_manager.get_push_notification_settings()
+        
+        if not notif_settings.get('notify_on_update', True):
+            return
+
+        # Perform check via UI Manager's helper (which is safe/static)
+        update_available = False
+        if self.ui_manager and hasattr(self.ui_manager, 'check_update_available'):
+            update_available = self.ui_manager.check_update_available()
+            
+        if update_available:
+            print("NotificationService: Update available! Sending notification.")
+            
+            subject = "KegLevel Update Available"
+            body = (
+                "An update is available for your KegLevel Monitor.\n\n"
+                "To install the update:\n"
+                "1. Go to the Settings Menu in the app.\n"
+                "2. Select 'Check for Updates'.\n"
+                "3. Click 'Install Updates' and wait for the app to restart.\n"
+            )
+            
+            smtp_config = {
+                'server': notif_settings.get('smtp_server'), 'port': notif_settings.get('smtp_port'),
+                'email': notif_settings.get('server_email'), 'password': notif_settings.get('server_password')
+            }
+            recipient = notif_settings.get('email_recipient')
+            
+            if recipient and smtp_config['server']:
+                self._send_email_or_sms(subject, body, recipient, smtp_config, "Update Notification")
+            else:
+                print("NotificationService: Cannot send update notification (Missing Recipient/SMTP).")
+    # ------------------------------------
+
     def _status_request_listener_loop(self):
         """Dedicated thread loop for checking the status request email every minute."""
         print("NotificationService: Status Request Listener loop started (1 minute interval).")
@@ -631,10 +671,19 @@ class NotificationService:
             notification_type = current_settings.get('notification_type', 'None')
             frequency_str = current_settings.get('frequency', 'Daily')
             
+            now = time.time()
+            
+            # --- NEW: Check for Updates (Every 24h) ---
+            if now - self.last_update_check_time > 86400: # 24 hours
+                # Run in background to avoid blocking
+                threading.Thread(target=self._check_and_notify_update, daemon=True).start()
+                self.last_update_check_time = now
+            # ------------------------------------------
+            
             if notification_type == 'None':
+                # Even if push is off, we still sleep and loop for the Update Check
                 wait_time = 600
             else:
-                now = time.time()
                 interval_seconds = self._get_interval_seconds(frequency_str)
 
                 if now >= self.last_notification_sent_time + interval_seconds:

@@ -6,22 +6,21 @@
 # Get the full path to the directory this script is in (the project root)
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# --- ADDED: Define paths for the virtual environment ---
+# Define paths for the virtual environment
 VENV_DIR="$PROJECT_DIR/venv"
 VENV_PYTHON_EXEC="$VENV_DIR/bin/python"
-# --- END ADDED ---
 
 echo "--- KegLevel Update Script ---"
 echo "Starting update in $PROJECT_DIR"
 
-# --- 2. Check for Git Sanity (Optional, but good defense against user error) ---
+# --- 2. Check for Git Sanity ---
 if [ ! -d "$PROJECT_DIR/.git" ]; then
     echo "[ERROR] This directory does not appear to be a Git repository."
     echo "Please ensure you run 'git clone' first."
     exit 1
 fi
 
-# --- 3. *** NEW: Run Git Pull *** ---
+# --- 3. Run Git Pull ---
 echo "--- Pulling latest code from git... ---"
 git pull
 if [ $? -ne 0 ]; then
@@ -29,22 +28,32 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 echo "--- Git pull complete ---"
+
+# --- 4. *** NEW: Update System Dependencies *** ---
+echo "Checking system-level dependencies (apt)..."
+echo "You may be asked for your password."
+
+# We run the same install command as install.sh to ensure new tools (like numlockx) are present.
+# apt-get is smart enough to skip packages that are already installed.
+sudo apt-get install -y python3-tk python3-dev swig python3-venv liblgpio-dev numlockx
+
+if [ $? -ne 0 ]; then
+    echo "[WARNING] System dependency check failed. The app might still work, but some features could be missing."
+fi
 # --- END NEW ---
 
-# --- 4. Run Dependency Installation (MODIFIED) ---
+# --- 5. Run Python Dependency Installation ---
 echo "Checking for new Python dependencies..."
 
-# --- ADDED: Check if venv exists first ---
+# Check if venv exists first
 if [ ! -f "$VENV_PYTHON_EXEC" ]; then
     echo "[ERROR] Virtual environment not found at $VENV_PYTHON_EXEC"
     echo "This script only updates an existing installation."
     echo "Please run the ./install.sh script first."
     exit 1
 fi
-# --- END ADDED ---
 
-# --- MODIFIED: Install packages using the venv's pip ---
-# We call the python executable from the venv directly.
+# Install packages using the venv's pip
 "$VENV_PYTHON_EXEC" -m pip install -r "$PROJECT_DIR/requirements.txt"
 
 # Check if pip installation succeeded

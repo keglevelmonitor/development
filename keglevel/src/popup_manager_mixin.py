@@ -98,20 +98,27 @@ class PopupManagerMixin:
         self.system_settings_autostart_var = tk.BooleanVar() 
         self.system_settings_launch_workflow_var = tk.BooleanVar() 
         
-        # --- NEW: Terminal Toggle Variable ---
+        # --- Terminal Toggle Variable ---
         self.system_settings_terminal_var = tk.BooleanVar()
-        # -------------------------------------
 
+        # --- Num Lock Variable ---
+        self.system_settings_numlock_var = tk.BooleanVar()
+
+        # --- Pour Volume Variables (Backing Store & Display) ---
         self.system_settings_pour_ml_var = tk.StringVar()
         self.system_settings_pour_oz_var = tk.StringVar()
+        self.system_settings_pour_size_display_var = tk.StringVar() 
+        self.system_settings_pour_unit_label_var = tk.StringVar()   
         
-        # --- UPDATED: Messaging Settings Variables ---
-        # Checkbox Booleans
+        # --- Messaging Settings Variables ---
         self.msg_push_enabled_var = tk.BooleanVar()
         self.msg_conditional_enabled_var = tk.BooleanVar()
         self.status_req_enable_var = tk.BooleanVar() 
+        
+        # --- NEW: Update Notification Variable ---
+        self.msg_notify_on_update_var = tk.BooleanVar()
+        # ----------------------------------------
 
-        # Configuration Strings
         self.msg_frequency_var = tk.StringVar()
         self.msg_server_email_var = tk.StringVar()
         self.msg_server_password_var = tk.StringVar()
@@ -119,12 +126,10 @@ class PopupManagerMixin:
         self.msg_smtp_server_var = tk.StringVar()
         self.msg_smtp_port_var = tk.StringVar()
         
-        # IMAP Config (for Status Request)
         self.status_req_sender_var = tk.StringVar() 
         self.status_req_imap_server_var = tk.StringVar()
         self.status_req_imap_port_var = tk.StringVar()
         
-        # Conditional Thresholds
         self.msg_conditional_threshold_var = tk.StringVar()
         self.msg_conditional_threshold_units_var = tk.StringVar(value="Gallons")
         self.last_units_for_threshold = self.settings_manager.get_display_units()
@@ -156,12 +161,47 @@ class PopupManagerMixin:
         self.eula_agreement_var = tk.IntVar(value=0) 
         self.show_eula_checkbox_var = tk.BooleanVar()
         self.support_qr_image = None
+        
+# --- NEW: Helper for checking git status (Used by UI and NotificationService) ---
+    def check_update_available(self):
+        """
+        Checks if the local git branch is behind origin.
+        Returns True if an update is available, False otherwise.
+        """
+        try:
+            # base_dir is src/, so project_dir is one up
+            project_dir = os.path.dirname(self.base_dir)
+            
+            # 1. Fetch latest info (silent)
+            subprocess.run(
+                ['git', 'fetch', 'origin'], 
+                cwd=project_dir, 
+                check=True, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL
+            )
+            
+            # 2. Check status
+            result = subprocess.run(
+                ['git', 'status', '-uno'], 
+                cwd=project_dir, 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
+            
+            if "Your branch is behind" in result.stdout:
+                return True
+                
+        except Exception as e:
+            print(f"Update Check Logic Error: {e}")
+            
+        return False
+    # -------------------------------------------------------------------------------
 
-    # --- Status Request Settings Popup Logic (NEW) ---
     def _open_message_settings_popup(self):
         popup = tk.Toplevel(self.root)
-        
-        # --- FIX: Hide immediately to prevent "Jump/Flash" visual glitch ---
         popup.withdraw() 
         
         popup.title("Notification Settings")
@@ -186,6 +226,10 @@ class PopupManagerMixin:
         
         # Shared Recipient
         self.msg_email_recipient_var.set(push_notif_settings.get('email_recipient', ''))
+        
+        # --- NEW: Load Update Notification Setting ---
+        self.msg_notify_on_update_var.set(push_notif_settings.get('notify_on_update', True))
+        # ---------------------------------------------
 
         # 2. Conditional Logic
         cond_type = cond_notif_settings.get('notification_type', 'None')
@@ -263,7 +307,7 @@ class PopupManagerMixin:
         
         # 1. Recipient
         self.shared_recipient_entry = add_row(outbound_frame, "Recipient Email:", self.msg_email_recipient_var)
-        ttk.Label(outbound_frame, text="(Required if either Push or Conditional notifications are enabled)", 
+        ttk.Label(outbound_frame, text="(Required if any Outbound notification is enabled)", 
                   font=('TkDefaultFont', 8, 'italic')).pack(anchor='w', padx=25, pady=(0, 10))
 
         # 2. Push Notifications
@@ -283,8 +327,7 @@ class PopupManagerMixin:
         self.cond_check = ttk.Checkbutton(outbound_frame, text="Enable Conditional Notifications", variable=self.msg_conditional_enabled_var)
         self.cond_check.pack(anchor='w', pady=(0, 2))
         
-        # Conditional Fields
-        cond_options_frame = ttk.Frame(outbound_frame); cond_options_frame.pack(fill="x", padx=25, pady=(0, 0))
+        cond_options_frame = ttk.Frame(outbound_frame); cond_options_frame.pack(fill="x", padx=25, pady=(0, 10))
 
         # Volume Row
         self.cond_vol_frame = ttk.Frame(cond_options_frame); self.cond_vol_frame.pack(fill="x", pady=2)
@@ -304,6 +347,11 @@ class PopupManagerMixin:
         self.cond_high_entry.pack(side="left")
         ttk.Label(self.cond_temp_frame, text=f"{unit_char}").pack(side="left", padx=(5, 5))
 
+        # 4. Update Notifications (NEW)
+        self.update_check = ttk.Checkbutton(outbound_frame, text="Notify when an update is available", variable=self.msg_notify_on_update_var)
+        self.update_check.pack(anchor='w', pady=(0, 2))
+        ttk.Label(outbound_frame, text="Checks once every 24 hours.", font=('TkDefaultFont', 8, 'italic')).pack(anchor='w', padx=25)
+
         # Section B: Inbound Controls
         inbound_frame = ttk.LabelFrame(tab1, text="Inbound Controls (Status & Commands)", padding=10)
         inbound_frame.pack(fill='x', pady=10)
@@ -315,8 +363,7 @@ class PopupManagerMixin:
             "WARNING: When enabled, the app checks the 'RPi Email Configuration' account for new messages "
             "from the Authorized Sender. If new messages exist, the app marks them as 'read', and "
             "processes them for 'Status' or 'Command' actions. Only enable this feature if you are using "
-            "a dedicated email account set up exclusively for this app, and enter that email account's "
-            "configuration settings on the 'RPi Email Configuration' tab."
+            "a dedicated email account set up exclusively for this app."
         )
         ttk.Label(inbound_frame, text=warning_text_tab1, font=('TkDefaultFont', 8, 'italic'), wraplength=550, justify='left').pack(anchor='w', padx=20, pady=(0, 5))
 
@@ -333,8 +380,7 @@ class PopupManagerMixin:
             "WARNING: When Email Control is enabled, the app checks the 'RPi Email Configuration' account for new messages "
             "from the Authorized Sender. If new messages exist, the app marks them as 'read', and "
             "processes them for 'Status' or 'Command' actions. Only enable this feature if you are using "
-            "a dedicated email account set up exclusively for this app, and enter that email account's "
-            "configuration settings on the 'RPi Email Configuration' tab."
+            "a dedicated email account set up exclusively for this app."
         )
         ttk.Label(tab2, text=warning_text_tab2, font=('TkDefaultFont', 8, 'italic'), wraplength=550, justify='left').pack(anchor='w', pady=(0, 15))
 
@@ -351,7 +397,6 @@ class PopupManagerMixin:
         btns_frame = ttk.Frame(popup, padding="10"); btns_frame.pack(fill="x", side="bottom")
         ttk.Button(btns_frame, text="Save", command=lambda: self._save_message_settings(popup)).pack(side="right", padx=5)
         ttk.Button(btns_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
-        # NEW HELP BUTTON
         ttk.Button(btns_frame, text="Help", width=8,
                    command=lambda: self._open_help_popup("notifications")).pack(side="right", padx=5)
 
@@ -359,13 +404,13 @@ class PopupManagerMixin:
         self.msg_push_enabled_var.trace_add("write", self._toggle_email_fields_state)
         self.msg_conditional_enabled_var.trace_add("write", self._toggle_email_fields_state)
         self.status_req_enable_var.trace_add("write", self._toggle_email_fields_state)
+        # Add trace for update notification too
+        self.msg_notify_on_update_var.trace_add("write", self._toggle_email_fields_state)
         
         self._toggle_email_fields_state()
         
-        # Center with calculated dimensions (Width=650, Height=550)
-        self._center_popup(popup, 650, 550)
+        self._center_popup(popup, 650, 600) # Slightly taller for new option
         
-        # --- NEW: Set focus to first entry ---
         if hasattr(self, 'shared_recipient_entry'):
             self.shared_recipient_entry.focus_set()
         
@@ -608,7 +653,7 @@ class PopupManagerMixin:
              
         text_area.config(state="disabled")
 
-        # 3. Checkbox Frame (NEW)
+        # 3. Checkbox Frame
         chk_frame = ttk.Frame(status_popup, padding=(10, 0, 10, 5))
         chk_frame.pack(fill="x")
         
@@ -629,6 +674,10 @@ class PopupManagerMixin:
         # A. Close (Window only)
         close_btn = ttk.Button(btn_frame, text="Close", state="disabled", command=status_popup.destroy)
         close_btn.pack(side="right", padx=5)
+        
+        # NEW Help Button
+        ttk.Button(btn_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("check_for_updates")).pack(side="right", padx=5)
         
         # B. Close App (Shutdown app for restart) - Initially Disabled
         close_app_btn = ttk.Button(btn_frame, text="Close App (Restart)", state="disabled", 
@@ -897,19 +946,11 @@ class PopupManagerMixin:
             "copyright law. Unauthorized use, duplication, or distribution is "
             "strictly prohibited. This application is in beta testing. To request beta test status send a "
             "request including your full name and email address to KegLevelMonitor@gmail.com."
-
-            # "KegLevel Monitor(c) and KegLevel Workflow(c) names, texts, UI/UX "
-            # "(User Interface/User Experience or Graphical User Interface) and program code are copyrighted. "
-            # "This material and all components of this program are protected by "
-            # "copyright law. Unauthorized use, duplication, or distribution is "
-            # "strictly prohibited. For information contact the author/owner by email: KegLevelMonitor@gmail.com. "
-            # "Inquiries must include your full name and your country of residence including the state/province/district. "
         )
 
         ttk.Label(frame, text="KegLevel Monitor", font=('TkDefaultFont', 14, 'bold')).pack(pady=(0, 10))
         ttk.Label(frame, text=copyright_text, wraplength=700, justify=tk.LEFT).pack(anchor='w', pady=(0, 10))
         
-        # --- REFACTOR: Simplified version string (matches FermVault) ---
         version_display = self.app_version_string if self.app_version_string else 'Unknown'
         commit_hash = self.get_git_commit_hash()
         
@@ -917,16 +958,10 @@ class PopupManagerMixin:
             version_text = f"Version: {version_display} (Commit: {commit_hash})"
         else:
             version_text = f"Version: {version_display}"
-        # --- END REFACTOR ---
                        
         ttk.Label(frame, text=version_text, font=('TkDefaultFont', 10, 'italic')).pack(anchor='w', pady=(5, 5))
         
-        # --- REMOVED: License Key Status logic ---
-        
         self._add_changelog_section(frame, popup) 
-        
-        # --- FIXED: Attribution Link display (text should be the clickable link) ---
-        # The display needs to be clickable. In Tkinter, this means creating a clickable label.
         
         # Function to open the link in a browser (Tkinter friendly)
         def open_flaticon_link(event):
@@ -948,18 +983,18 @@ class PopupManagerMixin:
         # Pack the link label first to ensure it's at the absolute bottom
         link_label.pack(fill="x", side="bottom", pady=(0, 5), padx=10) 
         link_label.bind("<Button-1>", open_flaticon_link)
-        # --- END FIXED: Attribution Link ---
         
         buttons_frame = ttk.Frame(popup, padding=(10, 5)); 
         # Pack buttons just above the attribution frame
         buttons_frame.pack(fill="x", side="bottom") 
         
-        # --- REFACTOR: "Close" button packed to the right ---
         ttk.Button(buttons_frame, text="Close", command=popup.destroy, width=10).pack(side="right", pady=5)
         
-        # --- REFACTOR: "Support" button packed to the left ---
+        # NEW Help Button
+        ttk.Button(buttons_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("about")).pack(side="right", padx=5, pady=5)
+        
         ttk.Button(buttons_frame, text="Support this App", command=lambda: self._open_support_popup(is_launch=False), width=15).pack(side="left", padx=(0, 5), pady=5)
-        # --- END REFACTOR ---
         
         popup.update_idletasks()
         popup.geometry("750x520")
@@ -1201,15 +1236,15 @@ class PopupManagerMixin:
                 except ValueError:
                     messagebox.showerror("Input Error", "IBU must be blank or a whole number.", parent=popup_window); return
 
-            # VALIDATE SRM
+            # VALIDATE SRM (FIXED: Int only, 0-40)
             srm = None
             if srm_str:
                 try:
-                    srm = float(srm_str)
-                    # UPDATED: Allow 0 for clear liquids
-                    if not (0 <= srm <= 100): raise ValueError
+                    srm = int(srm_str) # Changed from float to int
+                    if not (0 <= srm <= 40): raise ValueError
                 except ValueError:
-                    messagebox.showerror("Input Error", "SRM must be blank or a number between 0 and 100.", parent=popup_window); return
+                    # Updated error message to reflect the correct range
+                    messagebox.showerror("Input Error", "SRM must be blank or a whole number between 0 and 40.", parent=popup_window); return
             
             new_data = {
                 "id": temp_vars['id'].get(), "name": name, "bjcp": bjcp_style, 
@@ -1450,8 +1485,8 @@ class PopupManagerMixin:
         popup = tk.Toplevel(self.root)
         popup.title("Keg Settings")
         
-        # Fixed window size
-        popup.geometry("700x510") 
+        # FIX: Use center_popup to ensure title bar/X is visible
+        self._center_popup(popup, 700, 510)
         
         popup.transient(self.root)
         popup.grab_set() 
@@ -1477,6 +1512,21 @@ class PopupManagerMixin:
 
         # Initial Population of the list
         self._populate_keg_settings_list(popup)
+        
+        # --- FIX: Restore Footer Buttons ---
+        footer_frame = ttk.Frame(popup, padding="10")
+        footer_frame.pack(fill="x", side="bottom")
+        
+        ttk.Button(footer_frame, text="Add New Keg", 
+                   command=lambda p=popup: self._open_keg_edit_popup(None, p)).pack(side="left", padx=5)
+
+        ttk.Button(footer_frame, text="Close", command=popup.destroy).pack(side="right", padx=5)
+        
+        ttk.Button(footer_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("keg_settings")).pack(side="right", padx=5)
+        # -------------------------------
+        
+        popup.update_idletasks()
 
     def _populate_keg_settings_list(self, popup_window):
         """Helper to rebuild the keg list inside the existing popup window."""
@@ -2847,26 +2897,60 @@ class PopupManagerMixin:
     # --- System Settings Popup Logic (MODIFIED: Added Pour Volume) ---
     
     def _open_system_settings_popup(self, *args, **kwargs):
-        popup = tk.Toplevel(self.root); popup.title("System Settings"); popup.geometry("450x480"); popup.transient(self.root); popup.grab_set()
+        popup = tk.Toplevel(self.root)
+        popup.withdraw() # Hide until centered
+        popup.title("System Settings")
+        popup.transient(self.root)
+        
+        # --- FIX: Moved grab_set() to END of function ---
+        # popup.grab_set() 
+        
+        # Explicit protocol to ensure X works
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
         
         form_frame = ttk.Frame(popup, padding="10"); form_frame.pack(expand=True, fill="both")
         
+        # 1. Load Stored Values into Variables
         pour_settings = self.settings_manager.get_pour_volume_settings()
         self.system_settings_pour_ml_var.set(str(pour_settings['metric_pour_ml']))
         self.system_settings_pour_oz_var.set(str(pour_settings['imperial_pour_oz']))
 
+        # 2. Logic to Sync UI Field <-> Storage Vars
+        def sync_input_to_storage(*args):
+            current_unit = self.system_settings_unit_var.get()
+            val = self.system_settings_pour_size_display_var.get()
+            if "Metric" in current_unit:
+                self.system_settings_pour_ml_var.set(val)
+            else:
+                self.system_settings_pour_oz_var.set(val)
+
+        def update_ui_from_storage(event=None):
+            self._update_conditional_threshold_units()
+            current_unit = self.system_settings_unit_var.get()
+            if "Metric" in current_unit:
+                self.system_settings_pour_size_display_var.set(self.system_settings_pour_ml_var.get())
+                self.system_settings_pour_unit_label_var.set("ml")
+            else:
+                self.system_settings_pour_size_display_var.set(self.system_settings_pour_oz_var.get())
+                self.system_settings_pour_unit_label_var.set("oz (US Fluid)")
+
+        try:
+            if hasattr(self, '_pour_trace_id'):
+                self.system_settings_pour_size_display_var.trace_remove('write', self._pour_trace_id)
+        except: pass
+        self._pour_trace_id = self.system_settings_pour_size_display_var.trace_add('write', sync_input_to_storage)
+
         row_idx = 0
         
+        # --- UI Construction ---
         ttk.Label(form_frame, text="Main Display Mode:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         ui_mode_options = ["Full (1920x1080 display)", "Compact (800x600 display)"]
         current_ui_mode = self.settings_manager.get_ui_mode()
         display_value = ui_mode_options[0] if current_ui_mode == "full" else ui_mode_options[1]
         self.system_settings_ui_mode_var.set(display_value)
         
-        # --- NEW: Capture UI Mode Combobox ---
         ui_mode_dropdown = ttk.Combobox(form_frame, textvariable=self.system_settings_ui_mode_var, values=ui_mode_options, state="readonly", width=25)
         ui_mode_dropdown.grid(row=row_idx, column=1, padx=5, pady=5, sticky="ew"); row_idx += 1
-        
         
         ttk.Label(form_frame, text="Volume Display Units:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         unit_options = ["Metric (liters/kilograms)", "US Imperial (gallons/pounds)"]
@@ -2877,7 +2961,7 @@ class PopupManagerMixin:
         
         unit_dropdown = ttk.Combobox(form_frame, textvariable=self.system_settings_unit_var, values=unit_options, state="readonly", width=25)
         unit_dropdown.grid(row=row_idx, column=1, padx=5, pady=5, sticky="ew"); row_idx += 1
-        unit_dropdown.bind("<<ComboboxSelected>>", lambda event: self._update_conditional_threshold_units())
+        unit_dropdown.bind("<<ComboboxSelected>>", update_ui_from_storage)
         
         ttk.Label(form_frame, text="Taps to Display:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         tap_count_options = [str(i) for i in range(1, self.num_sensors + 1)]
@@ -2895,31 +2979,32 @@ class PopupManagerMixin:
                             text="Launch KegLevel Workflow when KegLevel Monitor is started", 
                             variable=self.system_settings_launch_workflow_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
 
-            # --- NEW: Terminal Toggle ---
-            # Load state directly from file
+            # --- Terminal Toggle ---
             is_terminal_enabled = self.settings_manager.get_terminal_setting_state()
             self.system_settings_terminal_var.set(is_terminal_enabled)
             
             ttk.Checkbutton(form_frame, 
                             text="Enable Terminal window in background (Debugging)", 
                             variable=self.system_settings_terminal_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
-            # ----------------------------
+
+            # --- Num Lock Toggle ---
+            self.system_settings_numlock_var.set(self.settings_manager.get_force_numlock())
+            ttk.Checkbutton(form_frame, 
+                            text="Force Num Lock ON while app is running", 
+                            variable=self.system_settings_numlock_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
 
         ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx, column=0, columnspan=2, sticky='ew', pady=10); row_idx += 1
         
+        # --- Unified Pour Volume Section ---
         ttk.Label(form_frame, text="Pour Volume", font=('TkDefaultFont', 10, 'bold')).grid(row=row_idx, column=0, columnspan=2, pady=(0, 5), sticky="w"); row_idx += 1
 
-        metric_pour_frame = ttk.Frame(form_frame); metric_pour_frame.grid(row=row_idx, column=0, columnspan=2, sticky='ew'); 
-        ttk.Label(metric_pour_frame, text="Metric Pour Size (ml):", width=20, anchor="w").pack(side="left", padx=(5, 5), pady=5, anchor="w")
-        ttk.Entry(metric_pour_frame, textvariable=self.system_settings_pour_ml_var, width=10).pack(side="left", padx=(0, 5), pady=5)
-        ttk.Label(metric_pour_frame, text="ml").pack(side="left", padx=(0, 5), pady=5)
+        pour_frame = ttk.Frame(form_frame); pour_frame.grid(row=row_idx, column=0, columnspan=2, sticky='ew'); 
+        ttk.Label(pour_frame, text="Pour Size:", width=20, anchor="w").pack(side="left", padx=(5, 5), pady=5, anchor="w")
+        ttk.Entry(pour_frame, textvariable=self.system_settings_pour_size_display_var, width=10).pack(side="left", padx=(0, 5), pady=5)
+        ttk.Label(pour_frame, textvariable=self.system_settings_pour_unit_label_var).pack(side="left", padx=(0, 5), pady=5)
         row_idx += 1
-        
-        imperial_pour_frame = ttk.Frame(form_frame); imperial_pour_frame.grid(row=row_idx, column=0, columnspan=2, sticky='ew'); 
-        ttk.Label(imperial_pour_frame, text="Imperial Pour Size (oz):", width=20, anchor="w").pack(side="left", padx=(5, 5), pady=5, anchor="w")
-        ttk.Entry(imperial_pour_frame, textvariable=self.system_settings_pour_oz_var, width=10).pack(side="left", padx=(0, 5), pady=5)
-        ttk.Label(imperial_pour_frame, text="oz (US Fluid)").pack(side="left", padx=(0, 5), pady=5)
-        row_idx += 1
+
+        update_ui_from_storage()
 
         ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx, column=0, columnspan=2, sticky='ew', pady=10); row_idx += 1
         
@@ -2938,13 +3023,16 @@ class PopupManagerMixin:
         buttons_frame = ttk.Frame(popup, padding="10"); buttons_frame.pack(fill="x", side="bottom")
         ttk.Button(buttons_frame, text="Save", command=lambda p=popup: self._save_system_settings(p)).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
-        # NEW HELP BUTTON
-        ttk.Button(buttons_frame, text="Help", width=8,
-                   command=lambda: self._open_help_popup("system_settings")).pack(side="right", padx=5)
+        ttk.Button(buttons_frame, text="Help", width=8, command=lambda: self._open_help_popup("system_settings")).pack(side="right", padx=5)
+
+        ttk.Button(buttons_frame, text="Dev Tools", width=10,
+                   command=lambda: self._open_dev_warning_popup(popup)).pack(side="left", padx=5)
+
+        self._center_popup(popup, 450, 480)
         
-        popup.update_idletasks(); popup.geometry(f"{popup.winfo_width()}x{popup.winfo_height()}")
+        # --- FIX: Call grab_set() last, after window is ready ---
+        popup.grab_set()
         
-        # --- NEW: Focus on UI Mode Dropdown ---
         if ui_mode_dropdown:
             ui_mode_dropdown.focus_set()
 
@@ -3001,18 +3089,27 @@ class PopupManagerMixin:
         
         # --- Handle Autostart File ---
         if IS_RASPBERRY_PI_MODE and old_autostart_enabled != new_autostart_enabled:
-            app_src_dir = self.settings_manager.get_base_dir()
-            app_root_dir = os.path.join(app_src_dir, "..")
+            # FIX: Removed the second argument. Function now self-determines paths.
             action = 'add' if new_autostart_enabled else 'remove'
-            manage_autostart_file(action, app_root_dir)
+            manage_autostart_file(action)
         
-        # --- NEW: Handle Terminal Setting with Error Checking ---
+        # --- Handle Terminal Setting with Error Checking ---
         if IS_RASPBERRY_PI_MODE:
             enable_terminal = self.system_settings_terminal_var.get()
             success, msg = self.settings_manager.save_terminal_setting_state(enable_terminal)
             if not success:
                 messagebox.showwarning("Settings Warning", f"Could not update Terminal setting:\n{msg}", parent=popup_window)
-        # --------------------------------------------------------
+
+        # --- Save Num Lock ---
+        if IS_RASPBERRY_PI_MODE:
+            new_numlock_enabled = self.system_settings_numlock_var.get()
+            self.settings_manager.save_force_numlock(new_numlock_enabled)
+            
+            # Apply Immediate Force ON if enabled
+            if new_numlock_enabled:
+                try:
+                    subprocess.Popen(['numlockx', 'on'])
+                except Exception: pass
 
         self.settings_manager.save_launch_workflow_on_start(new_launch_workflow_on_start)
         
@@ -3057,6 +3154,138 @@ class PopupManagerMixin:
                  
         except ValueError: messagebox.showerror("Input Error", "Invalid number for taps display.", parent=popup_window)
 
+    def _open_dev_warning_popup(self, parent_popup):
+        """Shows the warning disclaimer before accessing Dev Tools."""
+        warn_popup = tk.Toplevel(parent_popup)
+        warn_popup.title("Developer Tools Warning")
+        
+        self._center_popup(warn_popup, 500, 280)
+        warn_popup.transient(parent_popup)
+        
+        # --- FIX: Moved grab_set to end ---
+        
+        def restore_parent():
+            warn_popup.destroy()
+            if parent_popup.winfo_exists():
+                parent_popup.grab_set()
+                parent_popup.focus_set()
+
+        warn_popup.protocol("WM_DELETE_WINDOW", restore_parent)
+
+        main_frame = ttk.Frame(warn_popup, padding="20")
+        main_frame.pack(expand=True, fill="both")
+
+        ttk.Label(main_frame, text="⚠ WARNING", foreground="red", font=('TkDefaultFont', 14, 'bold')).pack(pady=(0, 10))
+        
+        msg = (
+            "The tools on this popup are for developer use only. "
+            "Using these tools may cause the app to become unstable or unusable. "
+            "This could require full deletion and reinstallation of the app.\n\n"
+            "DO NOT proceed unless you are willing to assume these risks."
+        )
+        ttk.Label(main_frame, text=msg, wraplength=450, justify="center").pack(pady=(0, 20))
+
+        btn_frame = ttk.Frame(warn_popup, padding="10")
+        btn_frame.pack(fill="x", side="bottom")
+        
+        # Proceed: destroys current, opens next (which takes grab), so we don't restore parent yet
+        def proceed():
+            warn_popup.destroy()
+            self._open_dev_tools_popup(parent_popup)
+
+        ttk.Button(btn_frame, text="Proceed", command=proceed).pack(side="right", padx=10)
+        ttk.Button(btn_frame, text="Cancel", command=restore_parent).pack(side="right", padx=10)
+        
+        # --- FIX: Grab last ---
+        warn_popup.grab_set()
+
+    def _open_dev_tools_popup(self, parent_popup):
+        """The actual simulation control window."""
+        dev_popup = tk.Toplevel(parent_popup)
+        dev_popup.title("Developer Tools - Simulation")
+        self._center_popup(dev_popup, 400, 350)
+        dev_popup.transient(parent_popup)
+        
+        # --- FIX: Moved grab_set to end ---
+
+        def restore_parent():
+            dev_popup.destroy()
+            if parent_popup.winfo_exists():
+                parent_popup.grab_set()
+                parent_popup.focus_set()
+
+        dev_popup.protocol("WM_DELETE_WINDOW", restore_parent)
+
+        main_frame = ttk.Frame(dev_popup, padding="20")
+        main_frame.pack(expand=True, fill="both")
+
+        ttk.Label(main_frame, text="Virtual Pour Simulator", font=('TkDefaultFont', 12, 'bold')).pack(pady=(0, 15))
+
+        # 1. Tap Selection
+        select_frame = ttk.Frame(main_frame); select_frame.pack(fill="x", pady=5)
+        ttk.Label(select_frame, text="Select Tap:", width=15).pack(side="left")
+        
+        tap_options = [f"Tap {i+1}" for i in range(self.num_sensors)]
+        tap_var = tk.StringVar(value=tap_options[0])
+        ttk.Combobox(select_frame, textvariable=tap_var, values=tap_options, state="readonly", width=10).pack(side="left")
+
+        # 2. Volume
+        vol_frame = ttk.Frame(main_frame); vol_frame.pack(fill="x", pady=5)
+        ttk.Label(vol_frame, text="Volume to Pour:", width=15).pack(side="left")
+        
+        vol_var = tk.StringVar(value="0.5") # Default 0.5 Liters
+        ttk.Entry(vol_frame, textvariable=vol_var, width=10).pack(side="left")
+        ttk.Label(vol_frame, text="Liters (Raw)").pack(side="left", padx=5)
+
+        # 3. Flow Rate
+        rate_frame = ttk.Frame(main_frame); rate_frame.pack(fill="x", pady=5)
+        ttk.Label(rate_frame, text="Flow Speed:", width=15).pack(side="left")
+        
+        rate_var = tk.StringVar(value="2.00") # Default 2.0 LPM
+        ttk.Entry(rate_frame, textvariable=rate_var, width=10).pack(side="left")
+        ttk.Label(rate_frame, text="L/min").pack(side="left", padx=5)
+        
+        # 4. Deduct Volume Checkbox
+        deduct_frame = ttk.Frame(main_frame); deduct_frame.pack(fill="x", pady=(10, 5))
+        deduct_var = tk.BooleanVar(value=True) # Default Checked
+        ttk.Checkbutton(deduct_frame, text="Deduct measured volume from tap?", variable=deduct_var).pack(side="left")
+
+        # 5. Action
+        status_label = ttk.Label(main_frame, text="", foreground="blue")
+        status_label.pack(pady=10)
+
+        def do_sim():
+            try:
+                # Parse inputs
+                tap_idx = int(tap_var.get().split(" ")[1]) - 1
+                vol = float(vol_var.get())
+                rate = float(rate_var.get())
+                should_deduct = deduct_var.get()
+                
+                if vol <= 0 or rate <= 0:
+                    messagebox.showerror("Error", "Volume and Rate must be positive.", parent=dev_popup)
+                    return
+
+                # Send command to logic
+                if hasattr(self, 'sensor_logic') and self.sensor_logic:
+                    self.sensor_logic.simulate_pour(tap_idx, vol, rate, deduct_volume=should_deduct)
+                    action_text = "DEDUCTING" if should_deduct else "TEST ONLY (Reverting)"
+                    status_label.config(text=f"Simulating {vol}L on Tap {tap_idx+1} ({action_text})...", foreground="green")
+                else:
+                     status_label.config(text="Sensor Logic not connected.", foreground="red")
+                     
+            except ValueError:
+                messagebox.showerror("Error", "Invalid numeric input.", parent=dev_popup)
+
+        btn_frame = ttk.Frame(dev_popup, padding="10")
+        btn_frame.pack(fill="x", side="bottom")
+        
+        ttk.Button(btn_frame, text="Start Simulation", command=do_sim).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Close", command=restore_parent).pack(side="right", padx=5)
+        
+        # --- FIX: Grab last ---
+        dev_popup.grab_set()
+
     def _update_conditional_threshold_units(self):
         current_units = self.settings_manager.get_display_units()
         
@@ -3092,16 +3321,18 @@ class PopupManagerMixin:
 
     def _toggle_email_fields_state(self, *args):
         """
-        Enables or disables all fields based on the state of the three master checkboxes.
+        Enables or disables all fields based on the state of the master checkboxes.
         """
         try:
             push_enabled = self.msg_push_enabled_var.get()
             cond_enabled = self.msg_conditional_enabled_var.get()
             req_enabled = self.status_req_enable_var.get()
+            # --- NEW ---
+            update_enabled = self.msg_notify_on_update_var.get()
 
             # 1. Outbound Alerts Section (Shared Recipient)
-            # Enabled if EITHER push or conditional is ON
-            outbound_active = push_enabled or cond_enabled
+            # Enabled if ANY outbound notification is ON
+            outbound_active = push_enabled or cond_enabled or update_enabled
             outbound_state = 'normal' if outbound_active else 'disabled'
             
             if hasattr(self, 'shared_recipient_entry'):
@@ -3126,7 +3357,7 @@ class PopupManagerMixin:
             # 5. RPi Config Tab (Dependencies)
             
             # SMTP/Creds needed if ANY feature is ON
-            smtp_needed = push_enabled or cond_enabled or req_enabled
+            smtp_needed = push_enabled or cond_enabled or req_enabled or update_enabled
             smtp_state = 'normal' if smtp_needed else 'disabled'
             
             if hasattr(self, 'rpi_email_entry'): self.rpi_email_entry.config(state=smtp_state)
@@ -3142,18 +3373,22 @@ class PopupManagerMixin:
 
         except Exception as e:
             print(f"UI Info: State toggle failed (widget not ready?): {e}")
-        
+            
     def _save_message_settings(self, popup_window):
         try:
             # 1. Validate Ports
             push_on = self.msg_push_enabled_var.get()
             cond_on = self.msg_conditional_enabled_var.get()
             req_on = self.status_req_enable_var.get()
+            update_on = self.msg_notify_on_update_var.get()
             
             smtp_port_val = self.msg_smtp_port_var.get()
             smtp_port_to_save = int(smtp_port_val) if smtp_port_val.strip() else ""
             
-            if (push_on or cond_on or req_on) and smtp_port_to_save and not (0 < smtp_port_to_save <= 65535):
+            # Check if any outbound feature is on
+            any_outbound = push_on or cond_on or update_on
+            
+            if (any_outbound or req_on) and smtp_port_to_save and not (0 < smtp_port_to_save <= 65535):
                 messagebox.showerror("Input Error", "SMTP Port must be 1-65535.", parent=popup_window); return
 
             imap_port_val = self.status_req_imap_port_var.get()
@@ -3174,7 +3409,6 @@ class PopupManagerMixin:
             except ValueError: 
                 messagebox.showerror("Input Error", "Conditional Thresholds must be valid numbers.", parent=popup_window); return
             
-            # Convert back to base units (Liters and F)
             cond_threshold_liters = cond_threshold_display
             if self.settings_manager.get_display_units() == "imperial" and cond_threshold_liters is not None:
                 cond_threshold_liters = cond_threshold_liters / LITERS_TO_GALLONS
@@ -3185,8 +3419,6 @@ class PopupManagerMixin:
                 if high_temp_f is not None: high_temp_f = (high_temp_f * 9/5) + 32
 
             # 3. Construct Settings Objects
-            
-            # Push Settings: Map Boolean to "Email" or "None" for backward compatibility
             push_type = "Email" if push_on else "None"
             push_settings = {
                 "notification_type": push_type, 
@@ -3196,24 +3428,23 @@ class PopupManagerMixin:
                 "email_recipient": self.msg_email_recipient_var.get().strip(), 
                 "smtp_server": self.msg_smtp_server_var.get().strip(),
                 "smtp_port": smtp_port_to_save,
-                # SMS removed
-                "sms_number": "", "sms_carrier_gateway": "" 
+                "sms_number": "", "sms_carrier_gateway": "",
+                # --- SAVE NEW SETTING ---
+                "notify_on_update": update_on
+                # ------------------------
             }
 
-            # Conditional Settings: Map Boolean to "Email" or "None"
             cond_type = "Email" if cond_on else "None"
             cond_settings = {
                 "notification_type": cond_type, 
                 "threshold_liters": cond_threshold_liters,
                 "low_temp_f": low_temp_f, 
                 "high_temp_f": high_temp_f,
-                # Preserve existing state data
                 "sent_notifications": self.settings_manager.get_conditional_notification_settings().get("sent_notifications", [False] * self.num_sensors),
                 "temp_sent_timestamps": self.settings_manager.get_conditional_notification_settings().get("temp_sent_timestamps", []),
                 "error_reported_times": self.settings_manager.get_conditional_notification_settings().get("error_reported_times", {})
             }
             
-            # Status Request Settings
             status_settings = {
                 "enable_status_request": req_on,
                 "authorized_sender": self.status_req_sender_var.get().strip(),
@@ -3235,8 +3466,6 @@ class PopupManagerMixin:
             # 5. Trigger Service Reschedule
             if hasattr(self, 'notification_service') and self.notification_service: 
                 self.notification_service.force_reschedule()
-                # Important: We also need to restart the status listener specifically because its enable flag changed
-                # force_reschedule handles the push timer, but explicit listener restart is safer here.
                 self.notification_service.stop_status_request_listener()
                 self.notification_service.start_status_request_listener()
 
@@ -3247,8 +3476,6 @@ class PopupManagerMixin:
             
         except ValueError: messagebox.showerror("Input Error", "Port must be a valid number.", parent=popup_window)
         except Exception as e: messagebox.showerror("Error", f"An unexpected error occurred while saving: {e}", parent=popup_window)
-
-    # --- Temperature Log Popup Logic (Unchanged) ---
 
     def _execute_reset_log_and_refresh(self, popup_window):
         if messagebox.askyesno("Confirm Reset", "Are you sure you want to reset all temperature log data? This cannot be undone.", parent=popup_window):
@@ -3321,6 +3548,10 @@ class PopupManagerMixin:
         button_frame = ttk.Frame(popup); button_frame.pack(fill='x', pady=10, side="bottom")
         ttk.Button(button_frame, text="Reset Log", command=lambda p=popup: self._execute_reset_log_and_refresh(p)).pack(side='left', padx=10)
         ttk.Button(button_frame, text="Close", command=popup.destroy).pack(side='right', padx=10)
+        
+        # NEW Help Button
+        ttk.Button(button_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("temp_log")).pack(side="right", padx=5)
 
     # --- Reset to Defaults Popup Logic (Unchanged) ---
     
@@ -3329,7 +3560,6 @@ class PopupManagerMixin:
 
         main_frame = ttk.Frame(popup, padding="15"); main_frame.pack(expand=True, fill="both")
 
-        # UPDATED: Removed "the SECURITY KEY," from the text
         message_text = ("Reset clears ALL settings including message settings, keg settings, "
                         "system settings, and the **entire Beverage Library**. ALL are reset to their default values.")
         ttk.Label(main_frame, text=message_text, wraplength=400, justify="left").pack(pady=(0, 20))
@@ -3338,6 +3568,10 @@ class PopupManagerMixin:
 
         ttk.Button(buttons_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=(10,0))
         ttk.Button(buttons_frame, text="Save (Reset)", command=lambda p=popup: self._execute_reset_to_defaults(p)).pack(side="right", padx=(0,10))
+        
+        # NEW Help Button
+        ttk.Button(buttons_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("section:reset_to_defaults")).pack(side="right", padx=5)
 
     def _execute_reset_to_defaults(self, popup_window):
         if not messagebox.askyesno("Confirm Reset",
@@ -3464,10 +3698,13 @@ class PopupManagerMixin:
 
             # Close Button (Right)
             ttk.Button(footer_frame, text="Close", command=popup.destroy).pack(side="right", padx=5)
+            
+            # NEW Help Button
+            ttk.Button(footer_frame, text="Help", width=8,
+                       command=lambda: self._open_help_popup("wiring")).pack(side="right", padx=5)
 
-            # PDF Actions (Left) - Modified: Only "Open PDF"
+            # PDF Actions (Left)
             if has_pdf:
-                # Open PDF Button (Launch default viewer)
                 ttk.Button(footer_frame, text="Open PDF", 
                            command=lambda: self._open_wiring_pdf(pdf_path, popup)).pack(side="left", padx=5)
 
@@ -3957,6 +4194,10 @@ class PopupManagerMixin:
         close_btn = ttk.Button(bottom_frame, text="Close", 
                                command=lambda: self._handle_support_popup_close(popup))
         close_btn.pack(side="right")
+        
+        # NEW Help Button
+        ttk.Button(bottom_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("support")).pack(side="right", padx=5)
 
         # --- 4. Finalize Popup ---
         popup_width = 780
@@ -4094,14 +4335,12 @@ class PopupManagerMixin:
         # Checkbox 1: App
         app_chk = ttk.Checkbutton(select_frame, text="Application Files", variable=delete_app_var)
         app_chk.pack(anchor="w")
-        # FIXED: Font size increased to 10 (same as standard text)
         ttk.Label(select_frame, text="Removes ~/keglevel, shortcuts, and autostart.", 
                   font=('TkDefaultFont', 10, 'italic'), foreground="#555").pack(anchor="w", padx=(20, 0), pady=(0, 5))
 
         # Checkbox 2: Data
         data_chk = ttk.Checkbutton(select_frame, text="User Data & Settings", variable=delete_data_var)
         data_chk.pack(anchor="w")
-        # FIXED: Font size increased to 10 (same as standard text)
         ttk.Label(select_frame, text="Removes ~/keglevel-data (Libraries, Logs, Settings).", 
                   font=('TkDefaultFont', 10, 'italic'), foreground="#555").pack(anchor="w", padx=(20, 0))
 
@@ -4134,6 +4373,10 @@ class PopupManagerMixin:
         uninstall_btn.pack(side="right", padx=5)
         
         ttk.Button(btn_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
+        
+        # NEW Help Button
+        ttk.Button(btn_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("uninstall_app")).pack(side="right", padx=5)
 
         # Trace to enable button only when "YES" is typed AND at least one box is checked
         def check_input(*args):

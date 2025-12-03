@@ -64,4 +64,3 @@ class UIManager(MainUIBase, PopupManagerMixin):
         self.ui_update_queue.put(("update_cal_data", (flow_rate_lpm, dispensed_pour_liters)))
     # --- END NEW METHOD ---
 
-    # --- MODIFIED: UIManager._poll_ui_update_queue is in MainUIBase. I will update MainUIBase ---

@@ -169,7 +169,7 @@ placeholder
 [Return to Table of Contents](section:main)
 
 [SECTION: uninstall_app]
-## Uninstall App #
+## Uninstall App ##
 
 placeholder
 

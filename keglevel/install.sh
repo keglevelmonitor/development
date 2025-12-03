@@ -30,9 +30,9 @@ echo ""
 echo "--- [Step 1/5] Checking System Dependencies ---"
 echo "You may be asked for your password to install system packages."
 
-# Install Tkinter, Build Tools (swig/dev), and the GPIO C-Library (liblgpio-dev)
+# Install Tkinter, Build Tools (swig/dev), GPIO C-Library (liblgpio-dev), AND numlockx
 sudo apt-get update
-sudo apt-get install -y python3-tk python3-dev swig python3-venv liblgpio-dev
+sudo apt-get install -y python3-tk python3-dev swig python3-venv liblgpio-dev numlockx
 
 # --- 3. Setup Python Environment (Clean Install) ---
 echo ""
