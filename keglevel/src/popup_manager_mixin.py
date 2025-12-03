@@ -2898,24 +2898,18 @@ class PopupManagerMixin:
     
     def _open_system_settings_popup(self, *args, **kwargs):
         popup = tk.Toplevel(self.root)
-        popup.withdraw() # Hide until centered
+        popup.withdraw() 
         popup.title("System Settings")
         popup.transient(self.root)
-        
-        # --- FIX: Moved grab_set() to END of function ---
-        # popup.grab_set() 
-        
-        # Explicit protocol to ensure X works
         popup.protocol("WM_DELETE_WINDOW", popup.destroy)
         
         form_frame = ttk.Frame(popup, padding="10"); form_frame.pack(expand=True, fill="both")
         
-        # 1. Load Stored Values into Variables
+        # 1. Load Stored Values
         pour_settings = self.settings_manager.get_pour_volume_settings()
         self.system_settings_pour_ml_var.set(str(pour_settings['metric_pour_ml']))
         self.system_settings_pour_oz_var.set(str(pour_settings['imperial_pour_oz']))
 
-        # 2. Logic to Sync UI Field <-> Storage Vars
         def sync_input_to_storage(*args):
             current_unit = self.system_settings_unit_var.get()
             val = self.system_settings_pour_size_display_var.get()
@@ -2942,16 +2936,21 @@ class PopupManagerMixin:
 
         row_idx = 0
         
-        # --- UI Construction ---
-        ttk.Label(form_frame, text="Main Display Mode:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
-        ui_mode_options = ["Full (1920x1080 display)", "Compact (800x600 display)"]
+        # --- UI Mode Selection (UPDATED) ---
+        ttk.Label(form_frame, text="Tap Display Detail:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
+        
+        # NEW OPTIONS
+        ui_mode_options = ["Detailed (All Info)", "Basic (Vital Stats Only)"]
         current_ui_mode = self.settings_manager.get_ui_mode()
-        display_value = ui_mode_options[0] if current_ui_mode == "full" else ui_mode_options[1]
+        
+        # Map internal key to display string
+        display_value = ui_mode_options[0] if current_ui_mode == "detailed" else ui_mode_options[1]
         self.system_settings_ui_mode_var.set(display_value)
         
         ui_mode_dropdown = ttk.Combobox(form_frame, textvariable=self.system_settings_ui_mode_var, values=ui_mode_options, state="readonly", width=25)
         ui_mode_dropdown.grid(row=row_idx, column=1, padx=5, pady=5, sticky="ew"); row_idx += 1
         
+        # --- Units ---
         ttk.Label(form_frame, text="Volume Display Units:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         unit_options = ["Metric (liters/kilograms)", "US Imperial (gallons/pounds)"]
         current_units_setting = self.settings_manager.get_display_units()
@@ -2963,6 +2962,7 @@ class PopupManagerMixin:
         unit_dropdown.grid(row=row_idx, column=1, padx=5, pady=5, sticky="ew"); row_idx += 1
         unit_dropdown.bind("<<ComboboxSelected>>", update_ui_from_storage)
         
+        # --- Taps ---
         ttk.Label(form_frame, text="Taps to Display:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         tap_count_options = [str(i) for i in range(1, self.num_sensors + 1)]
         self.system_settings_taps_var.set(str(self.settings_manager.get_displayed_taps()))
@@ -2970,34 +2970,21 @@ class PopupManagerMixin:
         
         if IS_RASPBERRY_PI_MODE:
             self.system_settings_autostart_var.set(self.settings_manager.get_autostart_enabled())
-            ttk.Checkbutton(form_frame, 
-                            text="Autostart KegLevel Monitor on Raspberry Pi startup/reboot", 
-                            variable=self.system_settings_autostart_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
-            
+            ttk.Checkbutton(form_frame, text="Autostart KegLevel Monitor on Raspberry Pi startup/reboot", variable=self.system_settings_autostart_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
             self.system_settings_launch_workflow_var.set(self.settings_manager.get_launch_workflow_on_start())
-            ttk.Checkbutton(form_frame, 
-                            text="Launch KegLevel Workflow when KegLevel Monitor is started", 
-                            variable=self.system_settings_launch_workflow_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
-
-            # --- Terminal Toggle ---
+            ttk.Checkbutton(form_frame, text="Launch KegLevel Workflow when KegLevel Monitor is started", variable=self.system_settings_launch_workflow_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
+            
             is_terminal_enabled = self.settings_manager.get_terminal_setting_state()
             self.system_settings_terminal_var.set(is_terminal_enabled)
-            
-            ttk.Checkbutton(form_frame, 
-                            text="Enable Terminal window in background (Debugging)", 
-                            variable=self.system_settings_terminal_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
+            ttk.Checkbutton(form_frame, text="Enable Terminal window in background (Debugging)", variable=self.system_settings_terminal_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
 
-            # --- Num Lock Toggle ---
             self.system_settings_numlock_var.set(self.settings_manager.get_force_numlock())
-            ttk.Checkbutton(form_frame, 
-                            text="Force Num Lock ON while app is running", 
-                            variable=self.system_settings_numlock_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
+            ttk.Checkbutton(form_frame, text="Force Num Lock ON while app is running", variable=self.system_settings_numlock_var).grid(row=row_idx, column=0, columnspan=2, padx=5, pady=5, sticky="w"); row_idx += 1
 
         ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx, column=0, columnspan=2, sticky='ew', pady=10); row_idx += 1
         
-        # --- Unified Pour Volume Section ---
+        # --- Pour Volume ---
         ttk.Label(form_frame, text="Pour Volume", font=('TkDefaultFont', 10, 'bold')).grid(row=row_idx, column=0, columnspan=2, pady=(0, 5), sticky="w"); row_idx += 1
-
         pour_frame = ttk.Frame(form_frame); pour_frame.grid(row=row_idx, column=0, columnspan=2, sticky='ew'); 
         ttk.Label(pour_frame, text="Pour Size:", width=20, anchor="w").pack(side="left", padx=(5, 5), pady=5, anchor="w")
         ttk.Entry(pour_frame, textvariable=self.system_settings_pour_size_display_var, width=10).pack(side="left", padx=(0, 5), pady=5)
@@ -3008,6 +2995,7 @@ class PopupManagerMixin:
 
         ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx, column=0, columnspan=2, sticky='ew', pady=10); row_idx += 1
         
+        # --- Temp Sensor ---
         ttk.Label(form_frame, text="Temperature Sensor Assignment", font=('TkDefaultFont', 10, 'bold')).grid(row=row_idx, column=0, columnspan=2, pady=(0, 5), sticky="w"); row_idx += 1
         
         available_sensors = []
@@ -3024,91 +3012,58 @@ class PopupManagerMixin:
         ttk.Button(buttons_frame, text="Save", command=lambda p=popup: self._save_system_settings(p)).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Help", width=8, command=lambda: self._open_help_popup("system_settings")).pack(side="right", padx=5)
-
-        ttk.Button(buttons_frame, text="Dev Tools", width=10,
-                   command=lambda: self._open_dev_warning_popup(popup)).pack(side="left", padx=5)
+        ttk.Button(buttons_frame, text="Dev Tools", width=10, command=lambda: self._open_dev_warning_popup(popup)).pack(side="left", padx=5)
 
         self._center_popup(popup, 450, 480)
-        
-        # --- FIX: Call grab_set() last, after window is ready ---
         popup.grab_set()
-        
-        if ui_mode_dropdown:
-            ui_mode_dropdown.focus_set()
+        if ui_mode_dropdown: ui_mode_dropdown.focus_set()
 
     def _save_system_settings(self, popup_window):
         selected_unit_display = self.system_settings_unit_var.get()
         
-        # --- Save Pour Volumes First with Validation ---
         try:
             new_pour_ml = int(self.system_settings_pour_ml_var.get())
             new_pour_oz = int(self.system_settings_pour_oz_var.get())
             if new_pour_ml <= 0 or new_pour_oz <= 0:
-                 messagebox.showerror("Input Error", "Pour volume must be a positive whole number (ml and oz).", parent=popup_window)
+                 messagebox.showerror("Input Error", "Pour volume must be a positive whole number.", parent=popup_window)
                  return
             self.settings_manager.save_pour_volume_settings(new_pour_ml, new_pour_oz)
         except ValueError:
             messagebox.showerror("Input Error", "Pour volume fields must be valid whole numbers.", parent=popup_window)
             return
         
-        # --- Unit and Mode Settings ---
-        if selected_unit_display == "US Imperial (gallons/pounds)":
-            new_unit_setting = "imperial"
-        elif selected_unit_display == "Metric (liters/kilograms)":
-            new_unit_setting = "metric"
-        else:
-            new_unit_setting = "imperial"
+        new_unit_setting = "metric" if "Metric" in selected_unit_display else "imperial"
         
+        # --- NEW: Map Display String -> Internal Key ---
         selected_ui_mode_display = self.system_settings_ui_mode_var.get()
-        new_ui_mode_setting = "full" if "Full" in selected_ui_mode_display else "lite"
-        
-        # --- Resolution Warning ---
-        if new_ui_mode_setting == "full":
-            screen_width = self.root.winfo_screenwidth()
-            screen_height = self.root.winfo_screenheight()
-            if screen_width < 1800 or screen_height < 900:
-                msg = (f"Your detected screen resolution ({screen_width}x{screen_height}) is smaller than "
-                       "the 1920x1080 required for Full Mode.\n\n"
-                       "The app may extend off-screen and become unusable.\n\n"
-                       "Do you want to proceed?")
-                if not messagebox.askyesno("Resolution Warning", msg, parent=popup_window):
-                    return 
+        new_ui_mode_setting = "detailed" if "Detailed" in selected_ui_mode_display else "basic"
+        # -----------------------------------------------
         
         new_ambient_sensor_id = self.sensor_ambient_var.get()
         new_autostart_enabled = self.system_settings_autostart_var.get()
         new_launch_workflow_on_start = self.system_settings_launch_workflow_var.get()
         
-        # Save display units
         self.settings_manager.save_display_units(new_unit_setting)
-        
         self.settings_manager.save_ui_mode(new_ui_mode_setting) 
         self.settings_manager.set_ds18b20_ambient_sensor(new_ambient_sensor_id)
         
         old_autostart_enabled = self.settings_manager.get_autostart_enabled()
         self.settings_manager.save_autostart_enabled(new_autostart_enabled)
         
-        # --- Handle Autostart File ---
         if IS_RASPBERRY_PI_MODE and old_autostart_enabled != new_autostart_enabled:
-            # FIX: Removed the second argument. Function now self-determines paths.
             action = 'add' if new_autostart_enabled else 'remove'
             manage_autostart_file(action)
         
-        # --- Handle Terminal Setting with Error Checking ---
         if IS_RASPBERRY_PI_MODE:
             enable_terminal = self.system_settings_terminal_var.get()
             success, msg = self.settings_manager.save_terminal_setting_state(enable_terminal)
-            if not success:
-                messagebox.showwarning("Settings Warning", f"Could not update Terminal setting:\n{msg}", parent=popup_window)
+            if not success: messagebox.showwarning("Settings Warning", f"Could not update Terminal setting:\n{msg}", parent=popup_window)
 
-        # --- Save Num Lock ---
         if IS_RASPBERRY_PI_MODE:
             new_numlock_enabled = self.system_settings_numlock_var.get()
             self.settings_manager.save_force_numlock(new_numlock_enabled)
-            
-            # Apply Immediate Force ON if enabled
             if new_numlock_enabled:
-                try:
-                    subprocess.Popen(['numlockx', 'on'])
+                try: subprocess.Popen(['numlockx', 'on'])
                 except Exception: pass
 
         self.settings_manager.save_launch_workflow_on_start(new_launch_workflow_on_start)
@@ -3119,34 +3074,24 @@ class PopupManagerMixin:
             
             if hasattr(self, 'temp_logic') and self.temp_logic:
                 self.temp_logic.get_assigned_sensor() 
-                
                 if self.temp_logic.ambient_sensor and self.temp_logic.ambient_sensor != 'unassigned':
                     temp_f = self.temp_logic.read_ambient_temperature()
-                    
                     if temp_f is not None:
                         display_units = self.settings_manager.get_display_units()
-                        if display_units == "imperial":
-                            self.update_temperature_display(temp_f, "F")
-                        else:
-                            temp_c = (temp_f - 32) * (5/9)
-                            self.update_temperature_display(temp_c, "C")
-                        
+                        if display_units == "imperial": self.update_temperature_display(temp_f, "F")
+                        else: self.update_temperature_display((temp_f - 32) * (5/9), "C")
                         self.temp_logic.last_known_temp_f = temp_f
-                    else:
-                        self.update_temperature_display(None, "No Sensor")
+                    else: self.update_temperature_display(None, "No Sensor")
                 else:
                     self.update_temperature_display(None, "No Sensor")
                     self.temp_logic.last_known_temp_f = None
-                    
-                if not self.temp_logic._running:
-                    self.temp_logic.start_monitoring()
+                if not self.temp_logic._running: self.temp_logic.start_monitoring()
 
             print("UIManager: System settings saved.")
             popup_window.destroy()
 
-            # Check if UI Mode Changed and Rebuild if necessary
+            # Dynamic UI Refresh (Mode change logic)
             mode_changed = (new_ui_mode_setting != self.ui_mode)
-            
             if mode_changed:
                 self.rebuild_ui()
             else:

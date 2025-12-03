@@ -11,6 +11,7 @@ import os
 import uuid 
 import subprocess 
 import sys      
+import re
 
 # --- NEW: Import platform flag from sensor_logic ---
 try:
@@ -28,7 +29,7 @@ except ImportError:
 
 
 # --- NEW: Application Revision Variable ---
-APP_REVISION = "20251004.03 Fixed" 
+APP_REVISION = "20251203.02 Reflow" 
 # ------------------------------------------
 
 LITERS_TO_GALLONS = 0.264172
@@ -49,18 +50,21 @@ class MainUIBase:
         
         self.app_version_string = app_version_string
 
-        self.ui_mode = self.settings_manager.get_system_settings().get('ui_mode', 'full') 
-        self.is_full_mode = (self.ui_mode == 'full')
+        # --- UPDATED MODE INITIALIZATION ---
+        # Default fallback is 'basic'
+        self.ui_mode = self.settings_manager.get_system_settings().get('ui_mode', 'basic') 
+        self.is_full_mode = (self.ui_mode == 'detailed')
+        # -----------------------------------
         
         self.is_rebuilding_ui = False
-
         self.ui_update_queue = queue.Queue()
         
         self._last_applied_geometry = None
+        self._current_cols = 0 
 
         self.root.title("KegLevel Monitor")
         
-        self._apply_window_geometry(set_position=True)
+        self._setup_main_window_properties()
             
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing_ui) 
         
@@ -82,16 +86,15 @@ class MainUIBase:
         
         self.flow_rate_label_widgets = [] 
         self.flow_rate_value_labels = []  
-        self.last_pour_label_widgets = [] # NEW
-        self.last_pour_value_labels = []  # NEW
+        self.last_pour_label_widgets = [] 
+        self.last_pour_value_labels = [] 
         
-        self.flow_rate_label_texts = [tk.StringVar(value="Flow rate L/min:") for _ in range(self.num_sensors)] 
+        self.flow_rate_label_texts = [tk.StringVar(value="Flow rate:") for _ in range(self.num_sensors)] 
         self.flow_rate_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
         
-        # --- NEW: Last Pour Variables ---
+        # --- Last Pour Variables ---
         self.last_pour_label_texts = [tk.StringVar(value="Last Pour:") for _ in range(self.num_sensors)]
         self.last_pour_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
-        # --------------------------------
         
         self.volume1_label_texts = [tk.StringVar() for _ in range(self.num_sensors)]
         self.volume1_value_texts = [tk.StringVar() for _ in range(self.num_sensors)]
@@ -106,7 +109,7 @@ class MainUIBase:
         self.sensor_keg_selection_vars = [tk.StringVar() for _ in range(self.num_sensors)]
         self.sensor_keg_dropdowns = [None] * self.num_sensors
 
-        # --- Full Mode Metadata Variables ---
+        # --- Metadata Variables ---
         self.beverage_metadata_texts = []
         for _ in range(self.num_sensors):
             self.beverage_metadata_texts.append({
@@ -128,13 +131,16 @@ class MainUIBase:
         self.sensor_is_actively_connected = [False] * self.num_sensors
         self.last_known_remaining_liters = [None] * self.num_sensors
         
-        # --- NEW: Cache for Last Pour Volumes (to survive refresh) ---
         self.last_known_pour_volumes = [0.0] * self.num_sensors
-        # -----------------------------------------------------------
         
         self.workflow_app = None 
         
         self.sensor_column_frames = [None] * self.num_sensors
+        
+        # Dictionary to store references to metadata frames for dynamic toggling
+        # Structure: { tap_index: { 'lite': frame_widget, 'full': frame_widget } }
+        self.metadata_frame_refs = {} 
+        
         self.settings_menubutton = None 
         self.temperature_label = None
         self.notification_status_label = None
@@ -143,164 +149,110 @@ class MainUIBase:
         self._load_initial_ui_settings()
         self._poll_ui_update_queue()
 
-    def _enforce_numlock(self, event=None):
-        """
-        Called whenever a window gains focus. 
-        Forces Num Lock ON if setting is enabled.
-        """
-        if not IS_RASPBERRY_PI_MODE: return
+    def _setup_main_window_properties(self):
+        """Configures the main window to be resizable and safe for different screens."""
         
-        # Dynamic check: Only enforce if setting is currently True
-        if not self.settings_manager.get_force_numlock(): return
-
-        if event and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
-             try:
-                 subprocess.Popen(['numlockx', 'on'])
-             except Exception:
-                 pass
-
-    def _apply_window_geometry(self, set_position=False, force_default=False):
-        """
-        Calculates and applies the window size based on the number of displayed taps.
-        Restores saved window position on startup (set_position=True).
-        """
-        import re 
+        # 1. Set Minimum Size
+        # 800x480 is the standard 7" RPi Touchscreen resolution
+        self.root.minsize(800, 480)
         
-        # 1. Calculate Target Dimensions based on Mode
-        if self.is_full_mode:
-            displayed_taps = self.settings_manager.get_displayed_taps()
-            CARD_WIDTH = 380
-            PADDING = 20 
-            
-            columns_to_show = min(displayed_taps, 5)
-            effective_columns = max(1, columns_to_show) # Minimum 1 column
-            
-            width = (effective_columns * CARD_WIDTH) + PADDING
-                
-            if displayed_taps > 5:
-                height = 800 
-            else:
-                height = 430 
+        # 2. Restore Saved Geometry OR Default
+        saved_geometry = self.settings_manager.get_window_geometry()
+        
+        if saved_geometry:
+            try:
+                self.root.geometry(saved_geometry)
+            except Exception:
+                self.root.geometry("800x600")
         else:
-            # Compact Mode Defaults
-            width = 800
-            height = 536
-
-        # 2. Optimization: Prevent redundant calls if size hasn't changed
-        # We only skip if we are NOT setting the position (i.e. just a refresh)
-        target_size_str = f"{width}x{height}"
-        if not set_position and not force_default and self._last_applied_geometry == target_size_str:
-            return
-
-        # 3. Construct Geometry String
-        geo_string = target_size_str
-
-        # 4. Handle Position Persistence
-        # We apply position if it's startup (set_position) OR if we are forcing default (mode switch)
-        if set_position or force_default:
-            position_suffix = "+0+36" # Default backup position
+            # Default safe start size
+            self.root.geometry("800x600")
             
-            # Only load saved geometry if NOT forcing default (i.e. normal startup)
-            if not force_default:
-                saved_geometry = self.settings_manager.get_window_geometry()
-                if saved_geometry:
-                    try:
-                        # Regex to extract the position part (+X+Y or -X-Y)
-                        match = re.search(r"([+-]-?\d+)([+-]-?\d+)$", saved_geometry)
-                        if match:
-                            position_suffix = match.group(0)
-                    except Exception:
-                        print("UIManager: Error parsing saved window geometry. Using default.")
+        # 3. Disable Resizing Initially
+        # This is part of the fix to force the WM to acknowledge the change later
+        self.root.resizable(False, False)
+        
+        # 4. CRITICAL FIX: The "Two-Step Jiggle"
+        # We move the window 1px, WAIT 100ms, then move it back.
+        # This delay ensures the Window Manager processes both events distincty.
+        def jiggle_window(event):
+            if event.widget != self.root: return
+            self.root.unbind("<Map>")
             
-            geo_string += position_suffix
-        
-        # 5. Apply to Root Window
-        try:
-            self.root.geometry(geo_string) 
-            self.root.resizable(False, False)
-            self._last_applied_geometry = target_size_str
-        except Exception as e:
-            print(f"UIManager: Error applying geometry {geo_string}: {e}")
-        
+            # Enable resizing now that window is visible
+            self.root.resizable(True, True)
+            
+            def _step_1_move():
+                try:
+                    # Use winfo_x/y for accurate content coordinates (avoids drift)
+                    x = self.root.winfo_x()
+                    y = self.root.winfo_y()
+                    w = self.root.winfo_width()
+                    h = self.root.winfo_height()
+                    
+                    # Store original position for Step 2
+                    self._jiggle_restore_x = x
+                    self._jiggle_restore_y = y
+                    self._jiggle_restore_w = w
+                    self._jiggle_restore_h = h
+                    
+                    # Move 1px right
+                    self.root.geometry(f"{w}x{h}+{x+1}+{y}")
+                    
+                    # Schedule Step 2 (Restore) after 100ms
+                    self.root.after(100, _step_2_restore)
+                except Exception as e:
+                    print(f"UI Warning: Jiggle Step 1 failed: {e}")
+
+            def _step_2_restore():
+                try:
+                    # Restore original position
+                    x = self._jiggle_restore_x
+                    y = self._jiggle_restore_y
+                    w = self._jiggle_restore_w
+                    h = self._jiggle_restore_h
+                    self.root.geometry(f"{w}x{h}+{x}+{y}")
+                except Exception as e:
+                    print(f"UI Warning: Jiggle Step 2 failed: {e}")
+
+            # Run Step 1 500ms after map
+            self.root.after(500, _step_1_move)
+            
+        self.root.bind("<Map>", jiggle_window)
+
+    def _enforce_numlock(self, event=None):
+        if not IS_RASPBERRY_PI_MODE: return
+        if not self.settings_manager.get_force_numlock(): return
+        if event and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+             try: subprocess.Popen(['numlockx', 'on'])
+             except Exception: pass
+
     def _srm_to_hex(self, srm):
-        """
-        Converts an SRM value (float) to a Hex Color Code approximation.
-        UPDATED: Uses a vibrant color palette based on visual brewing charts 
-        (Davison/Mosher) which corresponds to the Morey SRM scale. 
-        Prevents colors from becoming muddy/black too early in the range.
-        """
         if srm is None: return None
-        
-        # Clamp between 0 and 40
         srm = max(0, min(40, int(srm)))
-        
-        # Custom Palette (0=White/Clear)
-        # Source: Visual interpolation of standard SRM/Lovibond reference cards
         srm_colors = {
-            0: "#FFFFFF",  # White / Clear
-            1: "#FFE699",  # Pale Straw
-            2: "#FFD878",  # Straw
-            3: "#FFCA5A",  # Pale Gold
-            4: "#FFBF42",  # Deep Gold
-            5: "#FBB123",  # Golden Amber
-            6: "#F8A600",  # Deep Amber
-            7: "#F39C00",  # Amber
-            8: "#EA8F00",  # Deep Amber / Light Copper
-            9: "#E58500",  # Copper
-            10: "#DE7C00", # Deep Copper
-            11: "#D77200", # Light Brown / Red
-            12: "#CF6900", # Medium Amber / Red-Orange
-            13: "#CB6200", # Red-Brown
-            14: "#C35900", # Red-Brown
-            15: "#BB5100", # Deep Red-Brown
-            16: "#B54C00", # Dark Amber
-            17: "#B04500", # Deep Amber / Brown
-            18: "#A63E00", # Brown-Red
-            19: "#A13700", # Brown-Red
-            20: "#9B3200", # Brown
-            21: "#962D00", # Deep Brown
-            22: "#8F2900", # Dark Brown
-            23: "#882300", # Very Dark Brown
-            24: "#821E00", # Ruby Brown
-            25: "#7B1A00", # Deep Ruby Brown
-            26: "#771900", # Dark Ruby
-            27: "#701400", # Deep Red / Black
-            28: "#6A0E00", # Dark Brown / Black
-            29: "#660D00", # Deep Brown / Black
-            30: "#5E0B00", # Black / Red tints
-            31: "#5A0A02", # Deep Black / Red tints
-            32: "#600903", # Black
-            33: "#520907", # Black (Fixed Quotes)
-            34: "#4C0505", # Black
-            35: "#470606", # Black
-            36: "#440607", # Black
-            37: "#3F0708", # Black
-            38: "#3B0607", # Black
-            39: "#3A070B", # Black
-            40: "#36080A"  # Black
+            0: "#FFFFFF", 1: "#FFE699", 2: "#FFD878", 3: "#FFCA5A", 4: "#FFBF42", 5: "#FBB123",
+            6: "#F8A600", 7: "#F39C00", 8: "#EA8F00", 9: "#E58500", 10: "#DE7C00", 11: "#D77200",
+            12: "#CF6900", 13: "#CB6200", 14: "#C35900", 15: "#BB5100", 16: "#B54C00", 17: "#B04500",
+            18: "#A63E00", 19: "#A13700", 20: "#9B3200", 21: "#962D00", 22: "#8F2900", 23: "#882300",
+            24: "#821E00", 25: "#7B1A00", 26: "#771900", 27: "#701400", 28: "#6A0E00", 29: "#660D00",
+            30: "#5E0B00", 31: "#5A0A02", 32: "#600903", 33: "#520907", 34: "#4C0505", 35: "#470606",
+            36: "#440607", 37: "#3F0708", 38: "#3B0607", 39: "#3A070B", 40: "#36080A"
         }
-        
         return srm_colors.get(srm, "#E5A128")
 
     def _define_progressbar_styles(self):
         if not self.progressbar_styles_defined:
             s = ttk.Style(self.root)
             try: s.theme_use('default')
-            except tk.TclError: print("UIManager Warning: 'default' theme not available.")
-
+            except tk.TclError: pass
             common_opts = {'troughcolor': '#E0E0E0', 'borderwidth': 1, 'relief': 'sunken'}
-            
             s.configure("green.Horizontal.TProgressbar", background='green', **common_opts)
             s.configure("neutral.Horizontal.TProgressbar", background='#C0C0C0', **common_opts)
-            s.configure("red.Horizontal.TProgressbar", background='#DC143C', **common_opts) 
-            s.configure("yellow.Horizontal.TProgressbar", background='#FFDB58', **common_opts)
-            s.configure("gray.Horizontal.TProgressbar", background='#a0a0a0', **common_opts)
             s.configure("default.Horizontal.TProgressbar", background='#007bff', **common_opts)
-            
             for i in range(self.num_sensors):
                 style_name = f"Tap{i}.Horizontal.TProgressbar"
                 s.configure(style_name, background='green', **common_opts)
-            
             self.progressbar_styles_defined = True
             return s
         return ttk.Style(self.root)
@@ -311,7 +263,6 @@ class MainUIBase:
             beverage_library = self.settings_manager.get_beverage_library().get('beverages', [])
             beverage_map = {b['id']: b for b in beverage_library if 'id' in b}
             s = ttk.Style()
-            
             for i in range(self.num_sensors):
                 bar_color = 'green'
                 if i < len(assignments):
@@ -350,100 +301,129 @@ class MainUIBase:
         self.settings_menubutton["menu"] = self.settings_menu
         self.settings_menubutton.pack(side="right", padx=(0, 0), pady=0) 
 
-        if self.is_full_mode: temp_label_container = ttk.Frame(self.header_frame, width=120, height=26)
-        else: temp_label_container = ttk.Frame(self.header_frame, width=200, height=26)
-            
-        temp_label_container.pack_propagate(False); temp_label_container.pack(side="right", padx=(0, 10), pady=0)
+        # Temperature Display
+        temp_label_container = ttk.Frame(self.header_frame, width=120, height=26)
+        temp_label_container.pack_propagate(False)
+        temp_label_container.pack(side="right", padx=(0, 10), pady=0)
         self.temperature_label = ttk.Label(temp_label_container, textvariable=self.temperature_text, relief="sunken", padding=(5, 2), anchor=tk.W)
         self.temperature_label.pack(fill='both', expand=True)
         
-        # --- 2. MAIN CONTENT CONTAINER (PACKED) ---
+        # --- 2. MAIN CONTENT CONTAINER (VERTICAL SCROLLABLE CANVAS) ---
+        # Changed to Vertical scrollbar to support wrapping rows
         self.tap_container_frame = ttk.Frame(self.root)
         self.tap_container_frame.pack(side="top", fill="both", expand=True, padx=10, pady=(20, 0))
         
-        # --- 3. MAIN COLUMN FRAME (GRID) ---
-        self.main_columns_frame = ttk.Frame(self.tap_container_frame)
-        self.main_columns_frame.pack(fill="both", expand=True)
+        # Vertical Scrollbar (Right Side)
+        self.v_scrollbar = ttk.Scrollbar(self.tap_container_frame, orient="vertical")
+        self.v_scrollbar.pack(side="right", fill="y")
         
-        cols_per_row = 5
+        # Canvas
+        self.tap_canvas = tk.Canvas(self.tap_container_frame, yscrollcommand=self.v_scrollbar.set, highlightthickness=0)
+        self.tap_canvas.pack(side="left", fill="both", expand=True)
         
-        if self.is_full_mode:
-            grid_width = 380
-            combo_width = 16
-            val_width_large = 15 
-            val_width_small = 5  
-        else:
-            grid_width = 156
-            combo_width = 12 
-            val_width_large = 6  
-            val_width_small = 6  
-            
-        for col_idx in range(cols_per_row): 
-            self.main_columns_frame.grid_columnconfigure(col_idx, weight=0, minsize=grid_width)
-            
-        self.main_columns_frame.grid_rowconfigure(0, weight=1) 
-        self.main_columns_frame.grid_rowconfigure(1, weight=1)
+        self.v_scrollbar.config(command=self.tap_canvas.yview)
+        
+        # Internal Frame for Taps (Grid Layout)
+        self.main_columns_frame = ttk.Frame(self.tap_canvas)
+        
+        # Create Window in Canvas
+        self.canvas_window_id = self.tap_canvas.create_window((0, 0), window=self.main_columns_frame, anchor="nw")
+        
+        # --- DYNAMIC RESIZING EVENTS ---
+        def on_frame_configure(event):
+            """Reset the scroll region to encompass the inner frame"""
+            self.tap_canvas.configure(scrollregion=self.tap_canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            """
+            When the canvas width changes (user resize), resize the inner frame 
+            to match and trigger a reflow of the grid.
+            """
+            if self.tap_canvas.winfo_width() != self.main_columns_frame.winfo_reqwidth():
+                self.tap_canvas.itemconfig(self.canvas_window_id, width=event.width)
+                
+            # Trigger Reflow Logic based on new width
+            self._reflow_layout(event.width)
+
+        self.main_columns_frame.bind("<Configure>", on_frame_configure)
+        self.tap_canvas.bind("<Configure>", on_canvas_configure)
 
         # --- TAP COLUMN CREATION LOOP ---
-        WRAPLENGTH_TAP_COLUMN = 300 
+        WRAPLENGTH_TAP_COLUMN = 250 
         
         for i in range(self.num_sensors):
-            column_frame = ttk.Frame(self.main_columns_frame, padding=(3,3)); self.sensor_column_frames[i] = column_frame
+            column_frame = ttk.Frame(self.main_columns_frame, padding=(3,3), relief="groove")
+            self.sensor_column_frames[i] = column_frame
             
-            # 1. Unified Tap/Keg Selection Row
-            name_frame = ttk.Frame(column_frame)
-            name_frame.pack(anchor="w", pady=(0, 2), fill="x")
+            # Note: Grid placement now happens in _reflow_layout, not here.
             
-            keg_dropdown = None
-
-            if self.is_full_mode:
-                ttk.Label(name_frame, text=f"Tap {i + 1}:", style='Tap.Bold.TLabel').pack(side="left", padx=(0, 5))
-                keg_dropdown = ttk.Combobox(name_frame, textvariable=self.sensor_keg_selection_vars[i], state="readonly", width=combo_width)
-                keg_dropdown.pack(side="left", fill="x", expand=True)
-            else:
-                ttk.Label(name_frame, text=f"Tap {i + 1}", style='Tap.Bold.TLabel').pack(anchor="w")
-                keg_dropdown = ttk.Combobox(column_frame, textvariable=self.sensor_keg_selection_vars[i], state="readonly", width=combo_width)
-                keg_dropdown.pack(anchor="w", fill="x", pady=(0, 2))
-
+            # 1. Header: "Tap X" + Dropdown
+            header_subframe = ttk.Frame(column_frame)
+            header_subframe.pack(fill="x", pady=(0, 2))
+            
+            ttk.Label(header_subframe, text=f"Tap {i + 1}:", style='Tap.Bold.TLabel').pack(side="left", padx=(0, 5))
+            
+            keg_dropdown = ttk.Combobox(header_subframe, textvariable=self.sensor_keg_selection_vars[i], state="readonly")
+            keg_dropdown.pack(side="left", fill="x", expand=True)
             keg_dropdown.bind("<<ComboboxSelected>>", lambda event, idx=i: self._handle_keg_selection_change(idx))
             keg_dropdown.bind("<Button-1>", self._on_combobox_click)
             self.sensor_keg_dropdowns[i] = keg_dropdown
 
-            # 2. Beverage Metadata Display
-            if self.is_full_mode:
-                METADATA_HEIGHT = 160 
-                metadata_container = ttk.Frame(column_frame, height=METADATA_HEIGHT, style='LightGray.TFrame') 
-                metadata_container.pack_propagate(False); metadata_container.pack(anchor="w", pady=(2, 5), fill="x")
-                metadata_frame = ttk.Frame(metadata_container, padding=(5, 5), relief='flat', style='LightGray.TFrame') 
-                metadata_frame.pack(fill="both", expand=True) 
-                
-                metadata_row1 = ttk.Frame(metadata_frame, style='LightGray.TFrame'); metadata_row1.pack(anchor="w", fill="x")
-                ttk.Label(metadata_row1, text="BJCP:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="left", padx=(0, 2))
-                ttk.Label(metadata_row1, textvariable=self.beverage_metadata_texts[i]['bjcp'], background='#F0F0F0').pack(side="left", padx=(0, 10), anchor='w')
+            # --- DYNAMIC METADATA SECTIONS ---
+            self.metadata_frame_refs[i] = {}
 
-                ibu_frame = ttk.Frame(metadata_row1, style='LightGray.TFrame'); ibu_frame.pack(side="right", anchor='e')
-                ttk.Label(ibu_frame, textvariable=self.beverage_metadata_texts[i]['ibu'], anchor='e', background='#F0F0F0').pack(side="right")
-                ttk.Label(ibu_frame, text="IBU:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
-                
-                abv_frame = ttk.Frame(metadata_row1, style='LightGray.TFrame'); abv_frame.pack(side="right", anchor='e', padx=(20, 10)) 
-                ttk.Label(abv_frame, textvariable=self.beverage_metadata_texts[i]['abv'], anchor='e', background='#F0F0F0').pack(side="right")
-                ttk.Label(abv_frame, text="ABV:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
-
-                description_label = ttk.Label(metadata_frame, textvariable=self.beverage_metadata_texts[i]['description'], 
-                                              anchor='nw', font=('TkDefaultFont', 11, 'italic'), justify=tk.LEFT,
-                                              wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0') 
-                description_label.pack(anchor="w", fill="both", expand=True, pady=(5, 5)) 
-            else: 
-                metadata_line_frame = ttk.Frame(column_frame)
-                metadata_line_frame.pack(anchor="w", pady=(2, 0), fill="x")
-                ttk.Label(metadata_line_frame, text="ABV:", style='Metadata.Bold.TLabel').pack(side="left", padx=(0, 5))
-                ttk.Label(metadata_line_frame, textvariable=self.beverage_metadata_texts[i]['abv']).pack(side="left", anchor="w")
-                ttk.Label(metadata_line_frame, textvariable=self.beverage_metadata_texts[i]['ibu']).pack(side="right", anchor="e")
-                ttk.Label(metadata_line_frame, text="IBU:", style='Metadata.Bold.TLabel').pack(side="right", padx=(5, 2))
+            # A. Lite Mode Metadata (Single Line)
+            lite_meta_frame = ttk.Frame(column_frame)
             
+            ttk.Label(lite_meta_frame, text="ABV:", style='Metadata.Bold.TLabel').pack(side="left", padx=(0, 2))
+            ttk.Label(lite_meta_frame, textvariable=self.beverage_metadata_texts[i]['abv']).pack(side="left", anchor="w")
+            
+            ttk.Label(lite_meta_frame, textvariable=self.beverage_metadata_texts[i]['ibu']).pack(side="right", anchor="e")
+            ttk.Label(lite_meta_frame, text="IBU:", style='Metadata.Bold.TLabel').pack(side="right", padx=(5, 2))
+            
+            self.metadata_frame_refs[i]['lite'] = lite_meta_frame
+
+            # B. Full Mode Metadata (Gray Box)
+            METADATA_HEIGHT = 160 
+            full_meta_container = ttk.Frame(column_frame, height=METADATA_HEIGHT, style='LightGray.TFrame') 
+            full_meta_container.pack_propagate(False) 
+            
+            full_meta_inner = ttk.Frame(full_meta_container, padding=(5, 5), style='LightGray.TFrame') 
+            full_meta_inner.pack(fill="both", expand=True) 
+            
+            # Row 1: BJCP, ABV, IBU
+            fm_row1 = ttk.Frame(full_meta_inner, style='LightGray.TFrame')
+            fm_row1.pack(anchor="w", fill="x")
+            
+            ttk.Label(fm_row1, text="BJCP:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="left", padx=(0, 2))
+            ttk.Label(fm_row1, textvariable=self.beverage_metadata_texts[i]['bjcp'], background='#F0F0F0').pack(side="left", padx=(0, 10), anchor='w')
+
+            # Right aligned ABV/IBU
+            fm_ibu = ttk.Frame(fm_row1, style='LightGray.TFrame'); fm_ibu.pack(side="right", anchor='e')
+            ttk.Label(fm_ibu, textvariable=self.beverage_metadata_texts[i]['ibu'], anchor='e', background='#F0F0F0').pack(side="right")
+            ttk.Label(fm_ibu, text="IBU:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
+            
+            fm_abv = ttk.Frame(fm_row1, style='LightGray.TFrame'); fm_abv.pack(side="right", anchor='e', padx=(10, 10)) 
+            ttk.Label(fm_abv, textvariable=self.beverage_metadata_texts[i]['abv'], anchor='e', background='#F0F0F0').pack(side="right")
+            ttk.Label(fm_abv, text="ABV:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
+
+            # Row 2: Description
+            description_label = ttk.Label(full_meta_inner, textvariable=self.beverage_metadata_texts[i]['description'], 
+                                          anchor='nw', font=('TkDefaultFont', 11, 'italic'), justify=tk.LEFT,
+                                          wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0') 
+            description_label.pack(anchor="w", fill="both", expand=True, pady=(5, 5))
+            
+            # Use dynamic wrapping for description based on column width
+            def resize_desc_wrap(event, lbl=description_label):
+                lbl.config(wraplength=event.width - 10)
+            full_meta_container.bind("<Configure>", resize_desc_wrap)
+
+            self.metadata_frame_refs[i]['full'] = full_meta_container
+
             # 3. Progress Bar
             pb = ttk.Progressbar(column_frame, orient="horizontal", mode="determinate", maximum=100, style="default.Horizontal.TProgressbar")
-            pb.pack(pady=(10,5), fill='x', expand=False); self.sensor_progressbars[i] = pb
+            pb.pack(pady=(10,5), fill='x', expand=False)
+            self.sensor_progressbars[i] = pb
             
             # 4. Measurements
             # A. Flow Rate
@@ -451,74 +431,103 @@ class MainUIBase:
             lbl_title = ttk.Label(lidar_frame, textvariable=self.flow_rate_label_texts[i])
             lbl_title.pack(side="left", padx=(0, 2))
             self.flow_rate_label_widgets.append(lbl_title)
-            lbl_val = ttk.Label(lidar_frame, textvariable=self.flow_rate_value_texts[i], width=val_width_large, anchor="w")
+            lbl_val = ttk.Label(lidar_frame, textvariable=self.flow_rate_value_texts[i], anchor="w")
             lbl_val.pack(side="left", padx=(0,0)) 
             self.flow_rate_value_labels.append(lbl_val)
             
-            # B. NEW: Last Pour
+            # B. Last Pour
             pour_track_frame = ttk.Frame(column_frame); pour_track_frame.pack(anchor="w", fill="x", pady=1)
-            
             lbl_pour_title = ttk.Label(pour_track_frame, textvariable=self.last_pour_label_texts[i])
             lbl_pour_title.pack(side="left", padx=(0, 2))
             self.last_pour_label_widgets.append(lbl_pour_title)
-            
-            lbl_pour_val = ttk.Label(pour_track_frame, textvariable=self.last_pour_value_texts[i], width=val_width_large, anchor="w")
+            lbl_pour_val = ttk.Label(pour_track_frame, textvariable=self.last_pour_value_texts[i], anchor="w")
             lbl_pour_val.pack(side="left", padx=(0,0))
             self.last_pour_value_labels.append(lbl_pour_val)
-            # ---------------------
             
             # C. Volume Remaining
             vol1_frame = ttk.Frame(column_frame); vol1_frame.pack(anchor="w", fill="x", pady=1)
             ttk.Label(vol1_frame, textvariable=self.volume1_label_texts[i]).pack(side="left", padx=(0, 2))
-            ttk.Label(vol1_frame, textvariable=self.volume1_value_texts[i], width=val_width_small, anchor="w").pack(side="left", padx=(0,0))
+            ttk.Label(vol1_frame, textvariable=self.volume1_value_texts[i], anchor="w").pack(side="left", padx=(0,0))
             
             # D. Pours Remaining
             vol2_frame = ttk.Frame(column_frame); vol2_frame.pack(anchor="w", fill="x", pady=1)
             ttk.Label(vol2_frame, textvariable=self.volume2_label_texts[i]).pack(side="left", padx=(0, 2))
-            ttk.Label(vol2_frame, textvariable=self.volume2_value_texts[i], width=val_width_small, anchor="w").pack(side="left", padx=(0,0))
+            ttk.Label(vol2_frame, textvariable=self.volume2_value_texts[i], anchor="w").pack(side="left", padx=(0,0))
             
         # --- 4. Bottom Status Bar (PACKED) ---
         notification_label_container = ttk.Frame(self.root, height=26)
-        notification_label_container.pack_propagate(False); notification_label_container.pack(side="bottom", fill="x", padx=10, pady=(5,5))
+        notification_label_container.pack_propagate(False)
+        notification_label_container.pack(side="bottom", fill="x", padx=10, pady=(5,5))
         self.notification_status_label = ttk.Label(notification_label_container, textvariable=self.notification_status_text, anchor="w", relief="sunken", padding=(5,2))
         self.notification_status_label.pack(fill='both', expand=True)
 
+    def _reflow_layout(self, width, force=False):
+        """
+        Calculates how many columns fit within 'width' and re-grids the tap cards.
+        Enforces a Minimum Width per card and Max 5 columns per row.
+        """
+        if width <= 1: return
+        
+        # INCREASED to 290 to account for text wrapping (250px) + padding.
+        # This prevents cards from being gridded into a space too small for them.
+        MIN_CARD_WIDTH = 290 
+        MAX_COLS_PER_ROW = 5
+        
+        # Calculate optimal column count
+        cols = math.floor(width / MIN_CARD_WIDTH)
+        cols = min(cols, MAX_COLS_PER_ROW) # Cap at 5
+        cols = max(cols, 1) # Min 1
+        
+        # Optimization: Only re-grid if the column count changed OR if forced
+        if not force and cols == self._current_cols:
+            return
+            
+        self._current_cols = cols
+        
+        displayed_taps = self.settings_manager.get_displayed_taps()
+        
+        # Clear existing weights to prevent ghost columns
+        for i in range(10):
+            self.main_columns_frame.grid_columnconfigure(i, weight=0)
+            
+        # Set weight for active columns so they stretch equally
+        for i in range(cols):
+            self.main_columns_frame.grid_columnconfigure(i, weight=1)
+            
+        # Re-grid visible items
+        for i in range(displayed_taps):
+            frame = self.sensor_column_frames[i]
+            if frame:
+                row = i // cols
+                col = i % cols
+                frame.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+                
+        # Force update
+        self.main_columns_frame.update_idletasks()
+        
     def _on_combobox_click(self, event):
         """Forces the combobox list to scroll to the top when opened."""
         try:
-            # Get the combobox widget
             combo = event.widget
-            # Schedule the scroll adjustment to happen after the popdown is posted
-            # 100ms delay is usually sufficient for the popdown to be mapped
             combo.after(100, lambda: self._scroll_combobox_to_top(combo))
-        except Exception:
-            pass
+        except Exception: pass
 
     def _scroll_combobox_to_top(self, combo):
-        """Internal helper to access the popdown listbox and scroll it to the top."""
         try:
-            # Use Tcl command to get the popdown window path associated with this combobox
-            # Note: _w gives the Tkinter widget name
             popdown = combo.tk.eval(f'ttk::combobox::PopdownWindow {combo._w}')
-            
-            # The standard structure of a ttk combobox popdown contains a listbox at .f.l
             listbox = f"{popdown}.f.l"
-            
-            # Call 'see 0' on the internal listbox widget to scroll to the first item
             combo.tk.call(listbox, 'see', 0)
-        except Exception:
-            # Fail silently if internal structure differs (platform dependent, though reliable on Linux/Pi)
-            pass
+        except Exception: pass
                         
     def _load_initial_ui_settings(self):
         loaded_sensor_labels = self.settings_manager.get_sensor_labels()
         
         initial_logic_volumes = [None] * self.num_sensors
-        initial_pour_volumes = [0.0] * self.num_sensors # NEW
+        initial_pour_volumes = [0.0] * self.num_sensors
         
         if self.sensor_logic:
             initial_logic_volumes = self.sensor_logic.last_known_remaining_liters
-            initial_pour_volumes = self.sensor_logic.last_pour_volumes # NEW
+            initial_pour_volumes = self.sensor_logic.last_pour_volumes
 
         for i in range(self.num_sensors):
             self.sensor_name_texts[i].set(loaded_sensor_labels[i])
@@ -528,7 +537,6 @@ class MainUIBase:
             self.sensor_is_actively_connected[i] = False
             self.was_stable_before_pause[i] = False
             
-            # Load initial pour cache
             if i < len(initial_pour_volumes):
                 self.last_known_pour_volumes[i] = initial_pour_volumes[i]
             
@@ -547,41 +555,38 @@ class MainUIBase:
         
     def rebuild_ui(self):
         """
-        Restarts the application to switch between Full/Compact modes.
-        This ensures the Window Manager respects the new window size and position
-        by creating a completely fresh instance.
+        Switch modes dynamically without hard restart if possible.
         """
-        print("UIManager: Mode change detected. Restarting application...")
-        
-        # 1. Clear saved window geometry
-        # This ensures the new instance opens at the default (0,36) position
-        # rather than trying to apply the old mode's coordinates.
-        self.settings_manager.save_window_geometry(None)
-        
-        # 2. Gracefully stop threads to ensure clean exit
+        new_mode = self.settings_manager.get_ui_mode()
+        if new_mode != self.ui_mode:
+            print(f"UIManager: Switching display mode to {new_mode} dynamically.")
+            self.ui_mode = new_mode
+            
+            # --- UPDATED CHECK ---
+            self.is_full_mode = (new_mode == 'detailed')
+            # ---------------------
+            
+            self._apply_ui_mode_visibility()
+            self._refresh_ui_for_settings_or_resume()
+            return
+
+        print("UIManager: Performing hard restart...")
         if self.notification_service: self.notification_service.stop_scheduler()
         if self.sensor_logic: self.sensor_logic.stop_monitoring()
         if self.temp_logic: self.temp_logic.stop_monitoring()
         
-        # 3. Restart the process
-        # os.execl replaces the current process image with a new instance of the script
         try:
             python = sys.executable
             os.execl(python, python, *sys.argv)
         except Exception as e:
             print(f"UIManager: Failed to restart application: {e}")
-            # Fallback if restart fails: Close app so user can manually restart
             self._on_closing_ui()
         
     def _poll_ui_update_queue(self):
-        # --- NEW: Check rebuild flag ---
         if self.is_rebuilding_ui:
-            # Pause updates while UI is being destroyed/recreated
             if self.root.winfo_exists(): self.root.after(100, self._poll_ui_update_queue)
             return
-        # -------------------------------
 
-        # THROTTLED: Process a max batch of events to keep UI snappy
         max_events_per_cycle = 50 
         events_processed = 0
         
@@ -590,7 +595,7 @@ class MainUIBase:
                 try:
                     task, args = self.ui_update_queue.get_nowait()
                 except queue.Empty:
-                    break # Queue is empty, stop processing
+                    break 
 
                 if task == "update_sensor_data": self._do_update_sensor_data_display(*args)
                 elif task == "update_sensor_stability": self._do_update_sensor_stability_display(*args)
@@ -602,13 +607,10 @@ class MainUIBase:
                 
                 self.ui_update_queue.task_done()
                 events_processed += 1
-                
         finally:
             if self.root.winfo_exists(): 
-                # FASTER POLL: Check every 50ms (20Hz) instead of 100ms
-                # This ensures the queue clears faster and clicks are handled sooner.
-                self.root.after(50, self._poll_ui_update_queue) 
-
+                self.root.after(50, self._poll_ui_update_queue)
+                
     def update_temperature_display(self, temp_value, unit):
         self.ui_update_queue.put(("update_temp_display", (temp_value, unit)))
 
@@ -636,10 +638,18 @@ class MainUIBase:
     def _do_update_sensor_data_display(self, sensor_index, flow_rate_lpm, remaining_liters_float, status_string, last_pour_vol=None):
         if not self.root.winfo_exists() or not (0 <= sensor_index < self.num_sensors): return
         
-        # --- SMART FLOW RATE / ERROR LOGIC ---
-        if status_string == "Hardware Fault" or status_string == "Error" or status_string == "Missing" or status_string == "Sensor Unplugged":
-            lbl_flow = "Flow rate L/min:" if self.is_full_mode else "Flow:"
-            self.flow_rate_label_texts[sensor_index].set(lbl_flow)
+        # --- Check for Unassigned Beverage (Empty Keg) ---
+        assignments = self.settings_manager.get_sensor_beverage_assignments()
+        is_empty_beverage = (sensor_index < len(assignments) and assignments[sensor_index] == UNASSIGNED_BEVERAGE_ID)
+        
+        # Override logic: If no beverage, force volume to 0 for display
+        effective_remaining = remaining_liters_float
+        if is_empty_beverage:
+            effective_remaining = 0.0
+        # -------------------------------------------------
+
+        if status_string in ["Hardware Fault", "Error", "Missing", "Sensor Unplugged"]:
+            self.flow_rate_label_texts[sensor_index].set("Flow Rate:")
             
             try: self.flow_rate_value_labels[sensor_index].config(foreground='', font=('TkDefaultFont', 9))
             except: pass
@@ -655,12 +665,9 @@ class MainUIBase:
         
         self.sensor_is_actively_connected[sensor_index] = True
         
-        # Determine Labels and Style based on Status
         if status_string == "Pouring":
-            # ACTIVE POUR
-            lbl_text = "Flowing:" if not self.is_full_mode else "Flowing L/min:"
-            # FIX: Use shorter label for Compact Mode
-            pour_lbl_text = "Pouring:" if self.is_full_mode else "Pouring:" 
+            lbl_text = "Flowing:"
+            pour_lbl_text = "Pouring:"
             fg_color = "green"
             try:
                 bold_font = ('TkDefaultFont', 10, 'bold')
@@ -668,13 +675,11 @@ class MainUIBase:
                 self.last_pour_value_labels[sensor_index].config(font=bold_font) 
             except: pass
         else:
-            # IDLE / NOMINAL
-            lbl_text = "Last Avg:" if not self.is_full_mode else "Last Avg L/min:"
-            # FIX: Use shorter label for Compact Mode to prevent clipping
-            pour_lbl_text = "Last Pour:" if self.is_full_mode else "Poured:"
+            # Use full descriptive label for idle state
+            lbl_text = "Flow Rate:"
+            pour_lbl_text = "Last Pour:"
             fg_color = "" 
             try:
-                # Revert to system default font (matches other labels)
                 self.flow_rate_value_labels[sensor_index].config(font='')
                 self.last_pour_value_labels[sensor_index].config(font='')
             except: pass
@@ -690,11 +695,8 @@ class MainUIBase:
         flow_rate_display = f"{flow_rate_lpm:.2f}" if flow_rate_lpm is not None else "0.00"
         self.flow_rate_value_texts[sensor_index].set(flow_rate_display)
         
-        # --- NEW: Update Last Pour Value with Unit Conversion ---
-        # Logic: If metric (ml), show integer (no decimal). If imperial (oz), show 1 decimal.
         if last_pour_vol is not None:
             self.last_known_pour_volumes[sensor_index] = last_pour_vol
-            
             display_units = self.settings_manager.get_display_units()
             if display_units == "imperial":
                 val = last_pour_vol / OZ_TO_LITERS 
@@ -703,8 +705,7 @@ class MainUIBase:
             else:
                 val = last_pour_vol * 1000.0 
                 unit = "ml"
-                val_str = f"{val:.0f}" # Integer for ml
-                
+                val_str = f"{val:.0f}" 
             self.last_pour_value_texts[sensor_index].set(f"{val_str} {unit}")
         else:
             cached = self.last_known_pour_volumes[sensor_index]
@@ -717,26 +718,25 @@ class MainUIBase:
                 else:
                     val = cached * 1000.0
                     unit = "ml"
-                    val_str = f"{val:.0f}" # Integer for ml
+                    val_str = f"{val:.0f}"
                 self.last_pour_value_texts[sensor_index].set(f"{val_str} {unit}")
             else:
                 self.last_pour_value_texts[sensor_index].set("--")
         
-        # Volume Updates (Existing Logic)
-        if remaining_liters_float is not None: self.last_known_remaining_liters[sensor_index] = remaining_liters_float
+        if effective_remaining is not None: self.last_known_remaining_liters[sensor_index] = effective_remaining
         
         display_units = self.settings_manager.get_display_units()
-        if remaining_liters_float is not None:
+        if effective_remaining is not None:
             pour_settings = self.settings_manager.get_pour_volume_settings()
             if display_units == "imperial":
-                gallons = remaining_liters_float * LITERS_TO_GALLONS
+                gallons = effective_remaining * LITERS_TO_GALLONS
                 pour_oz = pour_settings['imperial_pour_oz']
                 liters_per_pour = pour_oz * OZ_TO_LITERS
-                servings_remaining = math.floor(remaining_liters_float / liters_per_pour) if liters_per_pour > 0 else 0
+                servings_remaining = math.floor(effective_remaining / liters_per_pour) if liters_per_pour > 0 else 0
                 self.volume1_value_texts[sensor_index].set(f"{gallons:.2f}")
                 self.volume2_value_texts[sensor_index].set(f"{int(servings_remaining)}")
             else:
-                liters = remaining_liters_float
+                liters = effective_remaining
                 pour_ml = pour_settings['metric_pour_ml']
                 liters_per_pour = pour_ml / 1000.0
                 servings_remaining = math.floor(liters / liters_per_pour) if liters_per_pour > 0 else 0
@@ -775,7 +775,7 @@ class MainUIBase:
             new_style = f"Tap{sensor_index}.Horizontal.TProgressbar"
             new_value = current_percentage
             self.was_stable_before_pause[sensor_index] = True
-        elif status_text_from_logic == "Acquiring data..." or status_text_from_logic == "Hardware Fault" or status_text_from_logic == "Error":
+        elif status_text_from_logic in ["Acquiring data...", "Hardware Fault", "Error"]:
              new_style = "neutral.Horizontal.TProgressbar" 
              new_value = 100
              self.was_stable_before_pause[sensor_index] = False
@@ -818,53 +818,34 @@ class MainUIBase:
         self.ui_update_queue.put(("update_notification_status", (message,)))
     def _do_update_notification_status_display(self, message):
         if hasattr(self, 'notification_status_text') and self.root.winfo_exists():
-            current_time = time.strftime("%H:%M:%S") # Removed date for cleaner display
+            current_time = time.strftime("%H:%M:%S") 
             self.notification_status_text.set(f"[{current_time}] {message}")
 
     def _populate_keg_dropdowns(self):
-        """
-        Populates the keg dropdown with the simplified format:
-        Beverage (KegTitle)
-        
-        Sorting Order:
-        1. Special Actions (Kicked, Offline)
-        2. Filled Kegs (Alpha by Beverage Name, then Keg Title)
-        3. Empty Kegs (Alpha by Keg Title)
-        """
         all_keg_defs = self.settings_manager.get_keg_definitions()
         beverage_library = self.settings_manager.get_beverage_library().get('beverages', [])
         
-        # Create map for quick lookups: ID -> Name
         bev_map = {b['id']: b['name'] for b in beverage_library}
         
-        # Separate kegs into Filled and Empty lists
         filled_kegs = []
         empty_kegs = []
         
         for keg in all_keg_defs:
             bev_id = keg.get('beverage_id', UNASSIGNED_BEVERAGE_ID)
-            # Check if assigned AND the beverage actually exists in the library
             if bev_id != UNASSIGNED_BEVERAGE_ID and bev_id in bev_map:
-                filled_kegs.append(keg) # CORRECTED: Use 'keg' loop variable
+                filled_kegs.append(keg) 
             else:
-                empty_kegs.append(keg)  # CORRECTED: Use 'keg' loop variable
+                empty_kegs.append(keg) 
                 
-        # Sort Filled Kegs: Primary = Beverage Name, Secondary = Keg Title
         filled_kegs.sort(key=lambda k: (bev_map.get(k['beverage_id'], '').lower(), k.get('title', '').lower()))
-        
-        # Sort Empty Kegs: Primary = Keg Title
         empty_kegs.sort(key=lambda k: k.get('title', '').lower())
         
-        # Build the final display list
         display_options = []
-        
-        # 1. Special Options
         display_options.append("★ Keg Kicked - Calibrate")
         display_options.append("Offline")
         
-        self._keg_display_map = {} # Map "Label" -> "Keg ID" for lookup later
+        self._keg_display_map = {} 
         
-        # Helper to process and append to list
         def process_keg_list(keg_list, force_empty_label=False):
             for keg in keg_list:
                 k_id = keg['id']
@@ -876,41 +857,27 @@ class MainUIBase:
                 else:
                     bev_name = bev_map.get(bev_id, "Unknown")
                 
-                # FORMAT: Beverage (Keg)
                 label = f"{bev_name} ({title})"
-                    
                 display_options.append(label)
                 self._keg_display_map[label] = k_id
-                
-                # Also map the simple ID to the label for reverse lookup
                 self._keg_display_map[k_id] = label 
 
-        # 2. Add Filled Kegs
         process_keg_list(filled_kegs, force_empty_label=False)
-        
-        # 3. Add Empty Kegs
         process_keg_list(empty_kegs, force_empty_label=True)
 
-        # 4. Apply to widgets
         current_assignments_ids = self.settings_manager.get_sensor_keg_assignments()
         
         for i in range(self.num_sensors):
             if self.sensor_keg_dropdowns[i]:
                 self.sensor_keg_dropdowns[i]['values'] = display_options
-                
                 assigned_id = current_assignments_ids[i]
-                
                 if assigned_id == UNASSIGNED_KEG_ID:
                     self.sensor_keg_selection_vars[i].set("Offline")
                 else:
-                    # Lookup the label for this ID
                     rich_label = self._keg_display_map.get(assigned_id, "Offline") 
                     self.sensor_keg_selection_vars[i].set(rich_label)
                     
     def _populate_beverage_dropdowns(self):
-        # This function is now mostly obsolete for the UI, but we might keep it 
-        # empty or strictly for internal state if needed. 
-        # For now, we can leave it empty to prevent errors if called.
         pass
         
     def _handle_beverage_selection_change(self, sensor_idx):
@@ -927,13 +894,9 @@ class MainUIBase:
                 selected_id = selected_beverage.get('id')
                 self.settings_manager.save_sensor_beverage_assignment(sensor_idx, selected_id)
             else:
-                print(f"Error: Selected beverage '{selected_beverage_name}' not found.")
                 return
 
-        # 1. Update Metadata Text (ABV, IBU, Description)
         self._refresh_beverage_metadata()
-        
-        # 2. Force Color Refresh for this specific tap
         self.refresh_tap_metadata(sensor_idx)
 
     def _refresh_beverage_metadata(self):
@@ -974,12 +937,9 @@ class MainUIBase:
     def _handle_keg_selection_change(self, sensor_idx):
         selected_label = self.sensor_keg_selection_vars[sensor_idx].get()
         
-        # 1. Handle Special Actions
         if selected_label.startswith("★"):
-            # (Existing Kicked Logic...)
             current_assignments_ids = self.settings_manager.get_sensor_keg_assignments()
             assigned_id = current_assignments_ids[sensor_idx]
-            # Reset dropdown to previous
             prev_label = self._keg_display_map.get(assigned_id, "Offline")
             self.sensor_keg_selection_vars[sensor_idx].set(prev_label)
             
@@ -990,13 +950,11 @@ class MainUIBase:
             )
             if not confirm: return
             if hasattr(self, '_open_flow_calibration_popup'):
-                # Pass the simple title for the popup header, not the rich label
                 keg = self.settings_manager.get_keg_by_id(assigned_id)
                 simple_title = keg.get('title', 'Unknown') if keg else 'Offline'
                 self._open_flow_calibration_popup(initial_tab_index=1, initial_tap_index=sensor_idx, initial_keg_title=simple_title)
             return
         
-        # 2. Resolve Keg ID from Label
         if selected_label == "Offline":
             selected_keg_id = UNASSIGNED_KEG_ID
             selected_bev_id = UNASSIGNED_BEVERAGE_ID
@@ -1004,44 +962,66 @@ class MainUIBase:
             selected_keg_id = self._keg_display_map.get(selected_label)
             if not selected_keg_id: return 
             
-            # Look up the Beverage ID assigned to this Keg
             keg_def = self.settings_manager.get_keg_by_id(selected_keg_id)
             selected_bev_id = keg_def.get('beverage_id', UNASSIGNED_BEVERAGE_ID)
             
-        # 3. Save Both Assignments
-        # The Keg assignment tells the logic which volume to track
         self.settings_manager.save_sensor_keg_assignment(sensor_idx, selected_keg_id)
-        # The Beverage assignment tells the UI what to display (Color/Name)
         self.settings_manager.save_sensor_beverage_assignment(sensor_idx, selected_bev_id)
         
-        # 4. Refresh UI
         self._refresh_ui_for_settings_or_resume()
-        self.refresh_tap_metadata(sensor_idx) # Update Color immediately
+        self.refresh_tap_metadata(sensor_idx) 
         
         if self.sensor_logic: 
             self.sensor_logic.force_recalculation()
+    
+    # --- Dynamic Visibility Toggler ---
+    def _apply_ui_mode_visibility(self):
+        """Hides or Shows metadata frames based on self.ui_mode."""
+        mode = self.ui_mode # 'detailed' or 'basic'
+        
+        for i in range(self.num_sensors):
+            frames = self.metadata_frame_refs.get(i, {})
+            lite_frame = frames.get('lite')
+            full_frame = frames.get('full')
             
+            # --- UPDATED CHECK ---
+            if mode == 'detailed':
+                if lite_frame: lite_frame.pack_forget()
+                if full_frame: full_frame.pack(anchor="w", pady=(2, 5), fill="x", after=self.sensor_keg_dropdowns[i].master)
+            else:
+                if full_frame: full_frame.pack_forget()
+                if lite_frame: lite_frame.pack(anchor="w", pady=(2, 0), fill="x", after=self.sensor_keg_dropdowns[i].master)
+
     def _update_sensor_column_visibility(self):
+        """
+        Updates which columns are visible based on displayed_taps setting.
+        The actual grid position is handled by _reflow_layout.
+        """
         displayed_taps_count = self.settings_manager.get_displayed_taps()
-        cols_per_row = 5
+        
+        # 1. Update visibility state (Mapped/Unmapped)
         for i in range(self.num_sensors):
             column_frame = self.sensor_column_frames[i]
             if column_frame:
                 if i < displayed_taps_count:
-                    grid_row = i // cols_per_row
-                    grid_col = i % cols_per_row
-                    is_last_in_visual_row = (grid_col == cols_per_row - 1) or (i == displayed_taps_count - 1)
-                    column_padx = (0, 0 if is_last_in_visual_row else 5)
-                    total_rows_for_displayed_taps = math.ceil(displayed_taps_count / cols_per_row)
-                    is_in_last_displayed_row_visually = (grid_row == total_rows_for_displayed_taps - 1)
-                    column_pady = (0, 0 if is_in_last_displayed_row_visually else 5)
-                    column_frame.grid(row=grid_row, column=grid_col, padx=column_padx, pady=column_pady, sticky="nsew")
-                else: column_frame.grid_remove()
+                    # We don't grid() here; _reflow_layout handles grid placement.
+                    # Just ensure we don't hide it if it's meant to be shown.
+                    pass 
+                else: 
+                    column_frame.grid_remove()
+                    
+        # 2. Apply visibility rules (Lite vs Full metadata)
+        self._apply_ui_mode_visibility()
+        
+        # 3. Trigger layout recalculation FORCEFULLY
+        # Pass force=True to ensure taps are re-gridded even if the column count 
+        # (width geometry) hasn't changed.
+        self._reflow_layout(self.tap_canvas.winfo_width(), force=True)
 
     def _refresh_ui_for_settings_or_resume(self):
         self._update_sensor_column_visibility()
         self.root.update_idletasks()
-        self._apply_window_geometry(set_position=False)
+        
         self._refresh_beverage_metadata()
         self._populate_beverage_dropdowns()
         
@@ -1058,22 +1038,16 @@ class MainUIBase:
                 else:
                     pours_label_str = f"{pour_ml} ml pours:"
 
-                if self.is_full_mode:
-                    lbl_vol = "Gal remaining:" if display_units == "imperial" else "Liters remaining:"
-                    lbl_pours = pours_label_str
-                    # Full Mode
-                    lbl_last_pour = "Last Pour:"
-                else:
-                    lbl_vol = "Vol:"
-                    lbl_pours = "Pours:"
-                    # Compact Mode
-                    lbl_last_pour = "Poured:"
+                # --- MODIFIED: Always use full labels (Removed 'if self.is_full_mode' logic) ---
+                lbl_vol = "Gal remaining:" if display_units == "imperial" else "Liters remaining:"
+                lbl_pours = pours_label_str
+                lbl_last_pour = "Last Pour:"
+                # -------------------------------------------------------------------------------
                 
                 self.volume1_label_texts[i].set(lbl_vol)
                 self.volume2_label_texts[i].set(lbl_pours)
                 self.last_pour_label_texts[i].set(lbl_last_pour)
                 
-                # --- NEW: Refresh Last Pour Display from Cache (with integer logic for ml) ---
                 cached_pour = self.last_known_pour_volumes[i]
                 if cached_pour > 0:
                     if display_units == "imperial":
@@ -1083,11 +1057,10 @@ class MainUIBase:
                     else:
                         val = cached_pour * 1000.0
                         unit = "ml"
-                        val_str = f"{val:.0f}" # Integer for ml
+                        val_str = f"{val:.0f}" 
                     self.last_pour_value_texts[i].set(f"{val_str} {unit}")
                 else:
                     self.last_pour_value_texts[i].set("--")
-                # -------------------------------------------------
                 
                 effective_stability_status = "Acquiring data..."
                 if self.sensor_logic and self.sensor_logic.is_paused: 
@@ -1112,6 +1085,7 @@ class MainUIBase:
         self._populate_keg_dropdowns()
         
     def _open_restart_confirmation_dialog(self):
+        # Deprecated: No longer needed for mode switch, but kept for critical setting changes
         popup = tk.Toplevel(self.root)
         popup.title("Restart Required")
         popup.geometry("350x180")
@@ -1120,7 +1094,7 @@ class MainUIBase:
         
         frame = ttk.Frame(popup, padding="15"); frame.pack(expand=True, fill="both")
         
-        ttk.Label(frame, text="The UI Display Mode has been changed. Please quit and restart the application manually for the changes to take full effect.", 
+        ttk.Label(frame, text="Settings changed. Please restart the application.", 
                   wraplength=300, justify=tk.CENTER).pack(pady=(0, 20))
         
         buttons_frame = ttk.Frame(popup, padding="10"); buttons_frame.pack(fill="x", side="bottom")
@@ -1131,14 +1105,9 @@ class MainUIBase:
     def _on_closing_ui(self):
         print("UIManager: Closing application...")
         
-        # --- NEW: Restore Num Lock ---
         if self.original_numlock_state == "off":
-            try:
-                subprocess.run(['numlockx', 'off'])
-                print("UIManager: Restored Num Lock to OFF.")
-            except Exception:
-                pass
-        # -----------------------------
+            try: subprocess.run(['numlockx', 'off'])
+            except Exception: pass
         
         if self.root and hasattr(self.root, 'winfo_exists') and self.root.winfo_exists():
             try:
@@ -1163,17 +1132,11 @@ class MainUIBase:
         print("UIManager: Application closed.")
 
     def _update_single_cal_data(self, flow_rate, dispensed_liters):
-        """
-        Updates the UI for the single tap calibration popup with live data.
-        This is called via the UI queue from SensorLogic.
-        """
         if not hasattr(self, '_single_cal_popup_window') or not self._single_cal_popup_window or not self._single_cal_popup_window.winfo_exists():
             return
 
         self.single_cal_measured_flow_var.set(f"{flow_rate:.2f} L/min")
         
-        # Update the "Measured Pour with Current Calibration" field
-        # Convert liters to user's selected unit
         unit_label = self.single_cal_unit_label.get()
         if unit_label == "ml":
             display_val = dispensed_liters * 1000.0
@@ -1184,16 +1147,10 @@ class MainUIBase:
             
         self.single_cal_measured_pour_var.set(f"{display_val:.2f}")
         
-    # --- ADD THIS NEW METHOD to UIManagerBase ---
     def refresh_tap_metadata(self, sensor_index):
-        """
-        Forces a reload of static metadata (Beer Name, SRM Color, Max Volume) 
-        for a specific tap index without rebuilding the whole UI.
-        """
-        if not hasattr(self, 'sensor_frames') or sensor_index >= len(self.sensor_frames):
+        if not hasattr(self, 'sensor_column_frames') or sensor_index >= len(self.sensor_column_frames):
             return
 
-        # 1. Fetch latest data from Settings
         kegs = self.settings_manager.get_keg_definitions()
         assignments = self.settings_manager.get_sensor_keg_assignments()
         beverage_assignments = self.settings_manager.get_sensor_beverage_assignments()
@@ -1202,53 +1159,15 @@ class MainUIBase:
         keg_id = assignments[sensor_index]
         beverage_id = beverage_assignments[sensor_index]
         
-        # 2. Resolve Beverage Name & SRM
         beverage = next((b for b in beverage_lib if b['id'] == beverage_id), None)
         beverage_name = beverage['name'] if beverage else "Unknown"
-        srm = beverage.get('srm')
         
-        # 3. Resolve Keg Title
-        keg = next((k for k in kegs if k['id'] == keg_id), None)
-        keg_title = keg['title'] if keg else "No Keg"
-
-        # 4. Update the Header Label (Beverage Name)
-        # We need to find the label widget. In _setup_sensor_ui, it's created but not always stored 
-        # in a dedicated list. However, we likely have self.beverage_name_labels or similar if designed well.
-        # If not, we rely on the frame structure, but let's check standard storage first.
+        # --- FIX: Handle NoneType for beverage ---
+        srm = beverage.get('srm') if beverage else None
+        # -----------------------------------------
         
-        if hasattr(self, 'beverage_name_vars') and len(self.beverage_name_vars) > sensor_index:
-             self.beverage_name_vars[sensor_index].set(beverage_name)
-             
-        if hasattr(self, 'keg_title_vars') and len(self.keg_title_vars) > sensor_index:
-             self.keg_title_vars[sensor_index].set(keg_title)
-
-        # 5. Update the Liquid Color (Canvas)
-        # We need to calculate the hex code for the SRM
-        fill_color = "#FFD700" # Default Gold
-        if srm is not None:
-             try:
-                 # Simple SRM to Hex approximation
-                 srm_int = int(float(srm))
-                 # Map SRM to colors (Approximate)
-                 srm_colors = {
-                     1: "#FFE699", 2: "#FFD878", 3: "#FFCA5A", 4: "#FFBF42", 5: "#FBB123",
-                     6: "#F8A600", 7: "#F39C00", 8: "#EA8F00", 9: "#E58500", 10: "#DE7C00",
-                     11: "#D77200", 12: "#CF6900", 13: "#CB6200", 14: "#C35900", 15: "#BB5100",
-                     16: "#B54C00", 17: "#B04500", 18: "#A63E00", 19: "#A13700", 20: "#9B3200",
-                     25: "#8D2B00", 30: "#7C2100", 35: "#6B1A00", 40: "#5A1300"
-                 }
-                 # Find closest key
-                 closest_srm = min(srm_colors.keys(), key=lambda k: abs(k-srm_int))
-                 fill_color = srm_colors[closest_srm]
-             except:
-                 pass
-
-        if hasattr(self, 'liquid_canvases') and len(self.liquid_canvases) > sensor_index:
-            canvas = self.liquid_canvases[sensor_index]
-            # Update the rectangle fill. Tag 'liquid' is usually used for the bar.
-            canvas.itemconfig("liquid", fill=fill_color)
-            
-        print(f"UI: Refreshed metadata for Tap {sensor_index+1}: {beverage_name} ({fill_color})")
+        # Note: Colors are handled via styles now
+        self._update_tap_progress_bar_colors()
         
     def run(self):
         self.root.mainloop()

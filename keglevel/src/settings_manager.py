@@ -35,20 +35,23 @@ class SettingsManager:
 
     def _get_default_keg_definitions(self):
         defs = []
-        for i in range(5):
+        # FIX: Generate enough default kegs for ALL sensors (10) instead of just 5
+        # FIX: Initialize them as EMPTY (0.0 Volume)
+        for i in range(self.num_sensors):
             keg_def = {
                 "id": str(uuid.uuid4()),
                 "title": f"Keg {i+1:02}",
                 "tare_weight_kg": 4.50,         
-                "starting_total_weight_kg": 23.50,
+                "starting_total_weight_kg": 4.50, # Full weight = Tare weight -> 0 Volume
                 "maximum_full_volume_liters": 18.93,
-                "calculated_starting_volume_liters": 18.90, 
+                "calculated_starting_volume_liters": 0.0, # Explicitly 0.0
                 "current_dispensed_liters": 0.0,
                 "total_dispensed_pulses": 0,
                 # --- NEW RICH DATA FIELDS ---
                 "beverage_id": UNASSIGNED_BEVERAGE_ID,
                 "fill_date": "" 
             }
+            # Recalculate to ensure consistency
             keg_def["calculated_starting_volume_liters"] = self._calculate_volume_from_weight(
                 keg_def["starting_total_weight_kg"], keg_def["tare_weight_kg"]
             )
@@ -69,12 +72,9 @@ class SettingsManager:
             "notification_type": "None", "frequency": "Daily", "server_email": "", "server_password": "", 
             "email_recipient": "", "smtp_server": "", "smtp_port": "", "sms_number": "", 
             "sms_carrier_gateway": "",
-            # --- NEW: Update Notification Default ---
             "notify_on_update": True
-            # ----------------------------------------
         }
     
-    # --- NEW: Default Status Request Settings ---
     def _get_default_status_request_settings(self):
         return {
             "enable_status_request": False,
@@ -86,7 +86,6 @@ class SettingsManager:
             "smtp_server": "",
             "smtp_port": ""
         }
-    # --- END NEW DEFAULTS ---
         
     def _get_default_conditional_notification_settings(self):
         return {
@@ -98,24 +97,33 @@ class SettingsManager:
     def _get_default_system_settings(self):
         return {
             "display_units": "metric", "displayed_taps": 5, "ds18b20_ambient_sensor": "unassigned", 
-            "ui_mode": "lite", "autostart_enabled": False, 
+            "ui_mode": "basic", "autostart_enabled": False, 
             "launch_workflow_on_start": False,
             "flow_calibration_factors": [DEFAULT_K_FACTOR] * self.num_sensors,
             "metric_pour_ml": 355, "imperial_pour_oz": 12,
             "flow_calibration_notes": "", "flow_calibration_to_be_poured": 500.0,
             "last_pour_averages": [0.0] * self.num_sensors,
-            
-            # --- NEW: Last Pour Volume Persistence ---
             "last_pour_volumes": [0.0] * self.num_sensors,
-            # -----------------------------------------
-            
             "force_numlock": False,
             "eula_agreed": False,
             "show_eula_on_launch": True,
             "window_geometry": None,
             "check_updates_on_launch": True,
-            "notify_on_update": True
+            "notify_on_update": True,
+            # --- NEW: Setup Flag ---
+            "setup_complete": False
+            # -----------------------
         }
+        
+    def get_setup_complete(self):
+        return self.get_system_settings().get('setup_complete', False)
+
+    def set_setup_complete(self, is_complete):
+        sys_set = self.settings.get('system_settings', self._get_default_system_settings())
+        sys_set['setup_complete'] = bool(is_complete)
+        self.settings['system_settings'] = sys_set
+        self._save_all_settings()
+        print(f"SettingsManager: Setup Complete flag set to {is_complete}")
 
     # --- NEW METHODS for Last Pour Volume ---
     def get_last_pour_volumes(self):
@@ -141,61 +149,30 @@ class SettingsManager:
         self._save_all_settings()
         print(f"SettingsManager: Force Num Lock saved: {enabled}")
 
-    # --- NEW METHODS for Smart Flow Rate ---
+        # --- NEW METHODS for Smart Flow Rate ---
     def get_last_pour_averages(self):
         defaults = self._get_default_system_settings().get('last_pour_averages')
         avgs = self.settings.get('system_settings', {}).get('last_pour_averages', defaults)
-        
-        # Validation: Ensure it's a list of correct length
         if not isinstance(avgs, list) or len(avgs) != self.num_sensors:
             return [0.0] * self.num_sensors
-        
         return [float(x) for x in avgs]
 
     def save_last_pour_averages(self, averages_list):
         if len(averages_list) == self.num_sensors:
             self.settings.setdefault('system_settings', self._get_default_system_settings())['last_pour_averages'] = averages_list
             self._save_all_settings()
-            # print(f"SettingsManager: Saved last pour averages.") # Optional logging
 
     def get_system_settings(self):
         defaults = self._get_default_system_settings() 
         sys_set = self.settings.get('system_settings', defaults).copy() 
         
-        if 'ui_mode' not in sys_set:
-            sys_set['ui_mode'] = defaults['ui_mode']
-        if 'autostart_enabled' not in sys_set:
-            sys_set['autostart_enabled'] = defaults['autostart_enabled']
-        if 'launch_workflow_on_start' not in sys_set:
-            sys_set['launch_workflow_on_start'] = defaults['launch_workflow_on_start']
-        if 'flow_calibration_factors' not in sys_set:
-             sys_set['flow_calibration_factors'] = defaults['flow_calibration_factors']
-        if 'metric_pour_ml' not in sys_set:
-            sys_set['metric_pour_ml'] = defaults['metric_pour_ml']
-        if 'imperial_pour_oz' not in sys_set:
-            sys_set['imperial_pour_oz'] = defaults['imperial_pour_oz']
-        if 'flow_calibration_notes' not in sys_set:
-             sys_set['flow_calibration_notes'] = defaults['flow_calibration_notes']
-        if 'flow_calibration_to_be_poured' not in sys_set:
-             sys_set['flow_calibration_to_be_poured'] = defaults['flow_calibration_to_be_poured']
-             
-        # Validation for EULA keys
-        if 'eula_agreed' not in sys_set:
-            sys_set['eula_agreed'] = defaults['eula_agreed']
-        if 'show_eula_on_launch' not in sys_set:
-            sys_set['show_eula_on_launch'] = defaults['show_eula_on_launch']
-            
-        # Validation for Window Geometry
-        if 'window_geometry' not in sys_set:
-            sys_set['window_geometry'] = defaults['window_geometry']
-
-        # Validation for Update Check
-        if 'check_updates_on_launch' not in sys_set:
-            sys_set['check_updates_on_launch'] = defaults['check_updates_on_launch']
+        # Ensure all default keys exist
+        for key, val in defaults.items():
+            if key not in sys_set:
+                sys_set[key] = val
             
         return sys_set
 
-    # --- ADD THESE NEW METHODS TO SettingsManager CLASS ---
     def get_check_updates_on_launch(self):
         return self.get_system_settings().get('check_updates_on_launch', True)
 
@@ -206,7 +183,6 @@ class SettingsManager:
         self._save_all_settings()
         print(f"SettingsManager: Check updates on launch saved: {enabled}")
 
-    # --- NEW METHODS ---
     def get_window_geometry(self):
         return self.get_system_settings().get('window_geometry')
 
@@ -215,69 +191,46 @@ class SettingsManager:
         sys_set['window_geometry'] = geometry_string
         self.settings['system_settings'] = sys_set
         self._save_all_settings()
-        print(f"SettingsManager: Window geometry saved: {geometry_string}")
 
     def _get_default_beverage_library(self):
         return {
             "beverages": [
                 {
                     "id": str(uuid.uuid4()), "name": "House Pale Ale", "bjcp": "18(b)", "abv": "5.0", 
-                    # NEW: Add default SRM
                     "ibu": 35, "srm": 5, "description": "A refreshing, hop-forward American Pale Ale with a balanced malt background and a clean, dry finish. Our go-to beer."
                 }
             ]
         }
 
-    # UPDATED: Default density changed from 1.0 (Water) to 1.014 (Average Homebrew)
     def _calculate_volume_from_weight(self, total_weight_kg, empty_weight_kg, density=1.014):
-        # UNCHANGED: This function correctly uses the weights (Tare/Total) to calculate the volume.
         liquid_weight_kg = total_weight_kg - empty_weight_kg
         return max(0.0, liquid_weight_kg / density)
 
-    # UPDATED: Default density changed from 1.0 (Water) to 1.014 (Average Homebrew)
     def _calculate_weight_from_volume(self, volume_liters, empty_weight_kg, density=1.014):
         liquid_weight_kg = volume_liters * density
         return empty_weight_kg + liquid_weight_kg
     
     def __init__(self, num_sensors_expected):
-        
-        # --- CRITICAL PATH FIX START: Setting the Base and Data Directories ---
-        
-        # 1. self.base_dir now correctly points to ~/keglevel/src/
         base_dir = os.path.dirname(os.path.abspath(__file__))
         print(f"SettingsManager: Using script path: {base_dir}")
-            
-        self.base_dir = base_dir # Store the resolved base directory (~/keglevel/src/)
+        self.base_dir = base_dir 
         
-        # 2. self.data_dir points to the sibling folder ~/keglevel-data/
-        # We get the path to /src/, go up to /keglevel/, go up to /~/, then go into /keglevel-data/
-        # This is a robust way to find the sibling directory.
         self.data_dir = os.path.abspath(os.path.join(self.base_dir, "..", "..", "keglevel-data"))
-        
         print(f"SettingsManager: Using data path: {self.data_dir}")
         
-        # 3. Create the data directory if it doesn't exist
         if not os.path.exists(self.data_dir):
             try:
                 os.makedirs(self.data_dir)
                 print(f"SettingsManager: Created data directory at {self.data_dir}")
             except Exception as e:
                 print(f"SettingsManager: CRITICAL ERROR: Could not create data directory: {e}")
-        # --- CRITICAL PATH FIX END ---
             
-        # 4. Update file paths to use the new self.data_dir
         self.settings_file_path = os.path.join(self.data_dir, SETTINGS_FILE)
         self.beverages_file_path = os.path.join(self.data_dir, BEVERAGES_FILE)
         self.process_flow_file_path = os.path.join(self.data_dir, PROCESS_FLOW_FILE)
         self.keg_library_file_path = os.path.join(self.data_dir, KEG_LIBRARY_FILE)
-        
-        # Note: This old trial file path is now obsolete, but we keep it
-        # pointing to the new data_dir in case cleanup logic needs it.
         self.trial_record_file_path = os.path.join(self.data_dir, TRIAL_RECORD_FILE)
-
-        # Assume BJCP file is also data
         self.bjcp_2021_file_path = os.path.join(self.data_dir, BJCP_2021_FILE)
-        # --- END PATH UPDATES ---
 
         self.num_sensors = num_sensors_expected
         
@@ -285,18 +238,12 @@ class SettingsManager:
         self.keg_library, self.keg_map = self._load_keg_library()
         self.settings = self._load_settings()
 
-        # REMOVED: Cleanup for obsolete local trial files
-
     def get_base_dir(self):
-        # This function now returns the fixed, resolved base directory (~/keglevel/src/)
         return self.base_dir
     
     def get_data_dir(self):
-        # NEW: This function returns the path to the data directory (~/keglevel-data/)
         return self.data_dir
 
-    # --- Keg Definition Library Logic (Unchanged) ---
-    
     def _load_keg_library(self):
         defaults = self._get_default_keg_definitions()
         if os.path.exists(self.keg_library_file_path):
@@ -309,14 +256,11 @@ class SettingsManager:
                     
                     keg_list = library.get('kegs', [])
                     
-                    # --- CRITICAL: Key Migration/Initialization Logic ---
                     migrated_list = []
                     default_keg_profile = self._get_default_keg_definitions()[0]
                     library_was_modified = False 
                     
-                    # --- FIX: Load RAW settings for migration to avoid circular dependency ---
-                    # We cannot use self.get_sensor_keg_assignments() here because self.settings 
-                    # hasn't been initialized yet. We must read the file directly.
+                    # Load RAW settings to avoid circular dependency for migration check
                     raw_settings = {}
                     if os.path.exists(self.settings_file_path):
                         try:
@@ -327,19 +271,15 @@ class SettingsManager:
                     current_keg_assignments = raw_settings.get('sensor_keg_assignments', [])
                     current_bev_assignments = raw_settings.get('sensor_beverage_assignments', [])
                     
-                    # Pad lists if shorter than num_sensors
                     while len(current_keg_assignments) < self.num_sensors: current_keg_assignments.append(UNASSIGNED_KEG_ID)
                     while len(current_bev_assignments) < self.num_sensors: current_bev_assignments.append(UNASSIGNED_BEVERAGE_ID)
 
-                    # Create a map of KegID -> BeverageID based on what is currently active on Taps
                     active_map = {}
                     for i, k_id in enumerate(current_keg_assignments):
                         if k_id != UNASSIGNED_KEG_ID and i < len(current_bev_assignments):
                             active_map[k_id] = current_bev_assignments[i]
-                    # -----------------------------------------------------------------------
 
                     for k in keg_list:
-                        # 1. Migrate old keys (Standard)
                         if 'empty_weight_kg' in k:
                             k['tare_weight_kg'] = k.pop('empty_weight_kg')
                             library_was_modified = True
@@ -354,7 +294,6 @@ class SettingsManager:
                         if 'calculated_starting_volume_liters' not in k: k['calculated_starting_volume_liters'] = default_keg_profile['calculated_starting_volume_liters']; library_was_modified = True
                         if 'current_dispensed_liters' not in k: k['current_dispensed_liters'] = default_keg_profile['current_dispensed_liters']; library_was_modified = True
                         
-                        # Pulse Migration
                         existing_liters = k.get('current_dispensed_liters', 0.0)
                         current_pulses = k.get('total_dispensed_pulses', 0)
                         if 'total_dispensed_pulses' not in k:
@@ -364,18 +303,12 @@ class SettingsManager:
                             k['total_dispensed_pulses'] = int(existing_liters * DEFAULT_K_FACTOR)
                             library_was_modified = True
                             
-                        # --- NEW: Rich Data Migration ---
                         if 'beverage_id' not in k:
-                            # Smart Migration: Check if this keg is currently on a tap
                             k_id = k.get('id')
                             if k_id in active_map:
-                                # It's active! Assign the beverage it is currently serving.
                                 k['beverage_id'] = active_map[k_id]
-                                # Optional: Set date to today since we don't know the real date
                                 k['fill_date'] = datetime.now().strftime("%Y-%m-%d")
-                                print(f"SettingsManager: Migrated Keg '{k.get('title')}' -> Assigned Beverage {active_map[k_id]}")
                             else:
-                                # It's offline/orphan. Initialize as empty.
                                 k['beverage_id'] = UNASSIGNED_BEVERAGE_ID
                                 k['fill_date'] = ""
                             library_was_modified = True
@@ -383,7 +316,6 @@ class SettingsManager:
                         if 'fill_date' not in k:
                             k['fill_date'] = ""
                             library_was_modified = True
-                        # --------------------------------
 
                         migrated_list.append(k)
 
@@ -430,13 +362,11 @@ class SettingsManager:
         new_keg_list = [k for k in keg_list if k.get('id') != keg_id_to_delete]
         
         if len(new_keg_list) == len(keg_list):
-            print(f"SettingsManager Error: Keg ID {keg_id_to_delete} not found for deletion.")
             return False, "Keg ID not found."
 
         self.save_keg_definitions(new_keg_list)
         
         assignments = self.get_sensor_keg_assignments()
-        
         first_kept_id = new_keg_list[0]['id'] if new_keg_list else UNASSIGNED_KEG_ID
 
         needs_assignment_update = False
@@ -453,18 +383,11 @@ class SettingsManager:
         return True, "Keg deleted and assignments updated."
         
     def update_keg_dispensed_volume(self, keg_id, dispensed_liters, pulses=0):
-        """
-        Updates the dispensed volume and pulse count for a keg in memory.
-        Does NOT save to disk immediately (handled by SensorLogic save call).
-        """
         if keg_id in self.keg_map:
             self.keg_map[keg_id]['current_dispensed_liters'] = dispensed_liters
-            
-            # Update pulse count
             current_pulses = self.keg_map[keg_id].get('total_dispensed_pulses', 0)
             self.keg_map[keg_id]['total_dispensed_pulses'] = current_pulses + pulses
 
-            # Sync with the list version
             for keg in self.keg_library['kegs']:
                 if keg.get('id') == keg_id:
                     keg['current_dispensed_liters'] = dispensed_liters
@@ -481,8 +404,6 @@ class SettingsManager:
             return {"id": UNASSIGNED_KEG_ID, "title": "Offline", "starting_volume_liters": 0.0, "current_dispensed_liters": 0.0}
         return self.keg_map.get(keg_id)
         
-    
-    # --- Beverage Library Methods (Unchanged) ---
     def _load_beverage_library(self):
         if os.path.exists(self.beverages_file_path):
             try:
@@ -492,16 +413,12 @@ class SettingsManager:
                          print(f"Beverage Library: Error loading library. Contents corrupted. Using default.") 
                          library = {"beverages": self._get_default_beverage_library().get('beverages', [])}
                     
-                    # --- NEW: Migration Logic for SRM (Missing Keys & Float->Int Conversion) ---
                     beverages = library.get('beverages', [])
                     modified = False
                     for b in beverages:
-                        # 1. Add missing key
                         if 'srm' not in b:
-                            b['srm'] = None # Default to None (Standard Beer Color) if missing
+                            b['srm'] = None
                             modified = True
-                        
-                        # 2. Convert Float to Int
                         elif isinstance(b['srm'], float):
                             b['srm'] = int(b['srm'])
                             modified = True
@@ -509,7 +426,6 @@ class SettingsManager:
                     if modified:
                         print("SettingsManager: Migrated beverage library to ensure SRM is present and integer.")
                         self._save_beverage_library(library)
-                    # ------------------------------------
 
                     return library
             except Exception as e:
@@ -536,33 +452,24 @@ class SettingsManager:
         self.beverage_library['beverages'] = new_library_list
         self._save_beverage_library(self.beverage_library)
 
-    # --- Add-on Library Methods (Unchanged) ---
     def get_available_addon_libraries(self):
-        """Scans the src/assets/ folder for _library.json files."""
-        # Construct path to assets directory relative to base_dir (src/)
         assets_dir = os.path.join(self.get_base_dir(), "assets")
         available_libraries = []
         
-        # Explicit mapping for known libraries to ensure pretty display names
         file_name_to_display_name = {
             "bjcp_2021_library.json": "BJCP 2021 Library",
             "bjcp_2015_library.json": "BJCP 2015 Library"
         }
         
         if not os.path.exists(assets_dir):
-            print(f"SettingsManager: Assets directory not found at {assets_dir}")
             return []
         
         try:
             for filename in os.listdir(assets_dir):
-                
-                # Only process files ending in _library.json
                 if filename.endswith('_library.json'):
-                    
                     if filename in file_name_to_display_name:
                          display_name = file_name_to_display_name[filename]
                     else:
-                         # Auto-format others: "custom_brews_library.json" -> "Custom Brews"
                          display_name = filename.replace('_library.json', '').replace('_', ' ').strip()
                          display_name = display_name.title()
 
@@ -577,21 +484,15 @@ class SettingsManager:
             return ["Error Scanning"]
 
     def get_addon_filename_from_display_name(self, display_name):
-        """Resolves a display name back to the full path in src/assets/."""
         assets_dir = os.path.join(self.get_base_dir(), "assets")
-        
-        # Handle known mappings
         if display_name == "BJCP 2021 Library":
             filename = "bjcp_2021_library.json"
         elif display_name == "BJCP 2015 Library":
             filename = "bjcp_2015_library.json"
         else:
-             # Reverse the auto-formatting: "Custom Brews" -> "custom_brews_library.json"
              filename_base = display_name.lower().replace(' ', '_')
              filename = f"{filename_base}_library.json"
-             
         return os.path.join(assets_dir, filename)
-
 
     def load_addon_library(self, addon_name):
         file_path = self.get_addon_filename_from_display_name(addon_name)
@@ -603,10 +504,8 @@ class SettingsManager:
                     if not isinstance(library.get('beverages'), list):
                          print(f"Addon Library: Contents of {addon_name} corrupted. Aborting import.")
                          return None
-                    
                     for beverage in library.get('beverages', []):
                         beverage['source_library'] = addon_name
-                    
                     return library.get('beverages', [])
             except Exception as e:
                 print(f"Addon Library: Error loading or decoding JSON for {addon_name}: {e}.")
@@ -621,7 +520,6 @@ class SettingsManager:
             return False, f"Could not load {addon_name} file.", 0
 
         current_beverages = self.get_beverage_library().get('beverages', [])
-        
         current_ids = {b['id'] for b in current_beverages if 'id' in b}
         new_beverages = [b for b in addon_list if b.get('id') not in current_ids]
         
@@ -645,29 +543,22 @@ class SettingsManager:
             return False, f"Could not load original {addon_name} file for integrity check.", 0, 0
         
         original_map = {b['id']: b for b in original_addon_list if 'id' in b}
-        
         total_original_count = len([b for b in current_beverages if b.get('source_library') == addon_name])
         
         for beverage in current_beverages:
             is_from_addon = beverage.get('source_library') == addon_name
-            
             if is_from_addon:
                 is_edited = False
                 original_data = original_map.get(beverage.get('id'))
-                
                 if original_data:
                     fields_to_check = ['name', 'bjcp', 'abv', 'ibu', 'description']
-                    
                     for field in fields_to_check:
                         current_val = beverage.get(field)
                         original_val = original_data.get(field)
-                        
                         if current_val == "": current_val = None
                         if original_val == "": original_val = None
-                        
                         if field == 'ibu':
                              current_val = int(current_val) if isinstance(current_val, str) and str(current_val).isdigit() else current_val
-                             
                         if current_val != original_val:
                             is_edited = True
                             break
@@ -691,7 +582,6 @@ class SettingsManager:
             beverages_to_keep = self._get_default_beverage_library().get('beverages', [])
             
         assignments = self.get_sensor_beverage_assignments()
-        
         first_kept_id = beverages_to_keep[0]['id'] if beverages_to_keep else None 
         
         for i in range(len(assignments)):
@@ -702,10 +592,6 @@ class SettingsManager:
         self.save_beverage_library(beverages_to_keep)
         return True, f"Successfully deleted {deleted_count} unedited entries from {addon_name}.", total_original_count, deleted_count
 
-    # --- NEW: Trial Management Methods (Online Model) ---
-    
-    
-    
     # --- Load/Reset Settings ---
 
     def _load_settings(self, force_defaults=False):
@@ -716,9 +602,7 @@ class SettingsManager:
         default_sensor_beverage_assignments = self._get_default_beverage_assignments() 
         default_system_settings_val = self._get_default_system_settings() 
         default_push_notification_settings_val = self._get_default_push_notification_settings() 
-        # --- NEW: Load Default Status Request Settings ---
         default_status_request_settings_val = self._get_default_status_request_settings()
-        # --- END NEW DEFAULTS ---
         default_conditional_notification_settings_val = self._get_default_conditional_notification_settings() 
 
         if not force_defaults and os.path.exists(self.settings_file_path):
@@ -745,9 +629,7 @@ class SettingsManager:
         else:
             assignments = settings['sensor_beverage_assignments'] 
             valid_ids = [b['id'] for b in self.beverage_library.get('beverages', []) if 'id' in b] 
-            # --- FIX: Allow the Offline ID to be considered valid so it persists ---
             valid_ids.append(UNASSIGNED_BEVERAGE_ID)
-            # ---------------------------------------------------------------------
             for i in range(len(assignments)):
                 if assignments[i] not in valid_ids: 
                     assignments[i] = default_sensor_beverage_assignments[i] 
@@ -773,6 +655,11 @@ class SettingsManager:
             settings['system_settings'] = default_system_settings_val 
             if not is_new_file_or_major_corruption: print("Settings: system_settings initialized/adjusted.") 
         else:
+            # FIX: Check for legacy migration BEFORE merging with defaults
+            # If 'setup_complete' is MISSING in the file, we need to detect if it's an existing user
+            raw_sys_settings = settings.get('system_settings', {})
+            needs_migration_check = 'setup_complete' not in raw_sys_settings
+            
             sys_set = default_system_settings_val.copy() 
             sys_set.update(settings['system_settings']) 
             
@@ -781,6 +668,36 @@ class SettingsManager:
             
             settings['system_settings'] = sys_set 
             
+            # --- MIGRATION: UI MODE (Full/Lite -> Detailed/Basic) ---
+            current_mode = settings['system_settings'].get('ui_mode')
+            if current_mode == 'full':
+                settings['system_settings']['ui_mode'] = 'detailed'
+                print("Settings: Migrated UI Mode 'full' -> 'detailed'")
+            elif current_mode == 'lite':
+                settings['system_settings']['ui_mode'] = 'basic'
+                print("Settings: Migrated UI Mode 'lite' -> 'basic'")
+            elif current_mode not in ["detailed", "basic"]:
+                 settings['system_settings']['ui_mode'] = default_system_settings_val['ui_mode']
+            
+            # --- MIGRATION: DETECT LEGACY INSTALL ---
+            if needs_migration_check:
+                # Heuristic: If we have valid keg assignments (not default unassigned)
+                assignments = settings.get('sensor_keg_assignments', [])
+                has_active_kegs = any(k != UNASSIGNED_KEG_ID for k in assignments)
+                
+                # Also check for non-default labels if they customized them
+                labels = settings.get('sensor_labels', [])
+                has_custom_labels = any(l != f"Tap {i+1}" for i, l in enumerate(labels))
+                
+                # If it looks like a configured system, mark setup as complete
+                if has_active_kegs or has_custom_labels:
+                    print("Settings: Legacy installation detected. Auto-completing setup.")
+                    settings['system_settings']['setup_complete'] = True
+                else:
+                    # Otherwise it's effectively a new install (or reset state)
+                    settings['system_settings']['setup_complete'] = False
+            # -----------------------------------------------------------------
+
             if settings['system_settings'].get('display_units') not in ["imperial", "metric"]: 
                 settings['system_settings']['display_units'] = default_system_settings_val['display_units'] 
             current_displayed_taps = settings['system_settings'].get('displayed_taps', self.num_sensors) 
@@ -792,7 +709,7 @@ class SettingsManager:
                 settings['system_settings']['displayed_taps'] = current_displayed_taps 
             if 'ds18b20_ambient_sensor' not in settings['system_settings']: 
                 settings['system_settings']['ds18b20_ambient_sensor'] = default_system_settings_val['ds18b20_ambient_sensor'] 
-            if 'ui_mode' not in settings['system_settings'] or settings['system_settings']['ui_mode'] not in ["full", "lite"]:
+            if 'ui_mode' not in settings['system_settings'] or settings['system_settings']['ui_mode'] not in ["detailed", "basic"]:
                  settings['system_settings']['ui_mode'] = default_system_settings_val['ui_mode']
             
             if 'flow_calibration_factors' not in settings['system_settings'] or not isinstance(settings.get('flow_calibration_factors', []), list) or len(settings['system_settings'].get('flow_calibration_factors', [])) != self.num_sensors:
@@ -830,6 +747,18 @@ class SettingsManager:
                 settings['system_settings']['eula_agreed'] = default_system_settings_val['eula_agreed']
             if 'show_eula_on_launch' not in settings['system_settings']:
                 settings['system_settings']['show_eula_on_launch'] = default_system_settings_val['show_eula_on_launch']
+            
+            # Validation for Window Geometry
+            if 'window_geometry' not in settings['system_settings']:
+                settings['system_settings']['window_geometry'] = default_system_settings_val['window_geometry']
+
+            # Validation for Update Check
+            if 'check_updates_on_launch' not in settings['system_settings']:
+                settings['system_settings']['check_updates_on_launch'] = default_system_settings_val['check_updates_on_launch']
+                
+            # Validation for Setup Complete
+            if 'setup_complete' not in settings['system_settings']:
+                settings['system_settings']['setup_complete'] = default_system_settings_val['setup_complete']
 
         loaded_notif_settings = {}
         if 'notification_settings' in settings: 
@@ -916,17 +845,13 @@ class SettingsManager:
         self.keg_map = {k['id']: k for k in self.keg_library['kegs']}
         self._save_keg_library(self.keg_library)
         
-        # REMOVED: Delete the obsolete local trial files
-        
         self.settings = {
             'sensor_labels': self._get_default_sensor_labels(), 
             'sensor_keg_assignments': self._get_default_sensor_keg_assignments(), 
             'sensor_beverage_assignments': self._get_default_beverage_assignments(), 
             'system_settings': self._get_default_system_settings(), 
             'push_notification_settings': self._get_default_push_notification_settings(), 
-            # --- NEW: Reset Status Request Settings ---
             'status_request_settings': self._get_default_status_request_settings(),
-            # --- END NEW RESET ---
             'conditional_notification_settings': self._get_default_conditional_notification_settings(), 
         }
         self._save_all_settings() 
@@ -934,15 +859,7 @@ class SettingsManager:
         
     # --- NEW HELPER: Load workflow data from disk directly ---
     def _get_workflow_data_from_disk(self):
-        """
-        Loads the process flow data and beverage names directly from JSON files,
-        without relying on the ProcessFlowApp being open.
-        """
-        # --- REFACTOR: Use get_data_dir() to find the data folder ---
-        # FIX: Change self.settings_manager.get_data_dir() to self.get_data_dir()
         base_dir = self.get_data_dir()
-        # --- END REFACTOR ---
-        
         workflow_file = os.path.join(base_dir, "process_flow.json")
         beverage_library = self.get_beverage_library()
         beverage_map = {b['id']: b['name'] for b in beverage_library.get('beverages', []) if 'id' in b and 'name' in b}
@@ -955,11 +872,10 @@ class SettingsManager:
             except Exception:
                 return {}, beverage_map
         return {}, beverage_map
-    # --- END NEW HELPER ---
 
-    def get_ui_mode(self): return self.settings.get('system_settings', {}).get('ui_mode', 'full')
+    def get_ui_mode(self): return self.settings.get('system_settings', {}).get('ui_mode', 'basic')
     def save_ui_mode(self, mode_string):
-        if mode_string in ["full", "lite"]:
+        if mode_string in ["detailed", "basic"]:
             self.settings.setdefault('system_settings', self._get_default_system_settings())['ui_mode'] = mode_string
             self._save_all_settings()
             print(f"SettingsManager: UI Mode saved to {mode_string}.")
@@ -976,8 +892,6 @@ class SettingsManager:
         self._save_all_settings()
         print(f"SettingsManager: Launch workflow on start setting saved as {is_enabled}.")
 
-
-    # --- Flow Calibration Factor Getters/Setters (Unchanged) ---
     def get_flow_calibration_factors(self):
         defaults = self._get_default_system_settings().get('flow_calibration_factors')
         factors = self.settings.get('system_settings', {}).get('flow_calibration_factors', defaults)
@@ -1080,9 +994,6 @@ class SettingsManager:
     def get_conditional_notification_settings(self):
         defaults = self._get_default_conditional_notification_settings() 
         
-        # FIX 1: Ensure the key exists in self.settings before proceeding.
-        # This handles cases where settings.json is created for the first time
-        # but the inner getter is called before the full _load_settings finalizes.
         if 'conditional_notification_settings' not in self.settings:
              self.settings['conditional_notification_settings'] = defaults
              
@@ -1099,12 +1010,10 @@ class SettingsManager:
         if 'temp_sent_timestamps' not in settings or not isinstance(settings['temp_sent_timestamps'], list): 
             settings['temp_sent_timestamps'] = [] 
         
-        # FIX 2: Ensure error_reported_times key exists within cond_set before merging
         if 'error_reported_times' not in settings:
              settings['error_reported_times'] = defaults['error_reported_times']
         else:
              merged_errors = defaults['error_reported_times'].copy()
-             # Use the value from the settings dictionary, which is guaranteed to exist now
              merged_errors.update(settings['error_reported_times']) 
              settings['error_reported_times'] = merged_errors
 
@@ -1136,9 +1045,7 @@ class SettingsManager:
 
     def update_temp_sent_timestamp(self, timestamp=None):
         cond_notif_settings = self.settings.get('conditional_notification_settings', {}).copy() 
-        
         timestamps = [timestamp if timestamp is not None else time.time()] 
-        
         cond_notif_settings['temp_sent_timestamps'] = timestamps 
         self.settings['conditional_notification_settings'] = cond_notif_settings 
         self._save_all_settings() 
@@ -1146,9 +1053,7 @@ class SettingsManager:
         
     def update_error_reported_time(self, error_type, timestamp):
         cond_notif_settings = self.settings.get('conditional_notification_settings', {}).copy()
-        
         error_reported_times = cond_notif_settings.get('error_reported_times', {})
-        
         if error_type in error_reported_times:
             error_reported_times[error_type] = timestamp
             cond_notif_settings['error_reported_times'] = error_reported_times
@@ -1157,7 +1062,6 @@ class SettingsManager:
 
     def get_error_reported_time(self, error_type):
         cond_notif_settings = self.settings.get('conditional_notification_settings', {})
-        
         return cond_notif_settings.get('error_reported_times', {}).get(error_type, 0.0)
 
     def get_sensor_keg_assignments(self):
@@ -1207,16 +1111,12 @@ class SettingsManager:
             if key not in current_notif_settings: 
                 current_notif_settings[key] = default_value 
         
-        # SMTP Port cleanup (Handles cases where port might be stored as an empty string or non-int string)
         port_val = current_notif_settings.get('smtp_port')
-        
         if isinstance(port_val, str):
             if port_val.strip().isdigit():
                 current_notif_settings['smtp_port'] = int(port_val)
             else:
-                # If it's an empty string or non-digit string, treat as empty ""
                 current_notif_settings['smtp_port'] = ""
-        # If it's an integer, it's fine. If it's None, it takes the default (which is "")
         
         return current_notif_settings 
 
@@ -1227,10 +1127,7 @@ class SettingsManager:
         if new_notif_settings.get('notification_type') not in ["None", "Email", "Text", "Both"]: new_notif_settings['notification_type'] = defaults['notification_type'] 
         if new_notif_settings.get('frequency') not in ["Hourly", "Daily", "Weekly", "Monthly"]: new_notif_settings['frequency'] = defaults['frequency'] 
         
-        # --- FIXED SMTP PORT SAVING LOGIC ---
         port_val = new_notif_settings.get('smtp_port', defaults['smtp_port'])
-        
-        # Ensure port is saved as an integer if it's a digit, otherwise save it as "" (which is what the UI passes for empty)
         try:
             port_str = str(port_val).strip()
             if port_str.isdigit():
@@ -1239,13 +1136,11 @@ class SettingsManager:
                  new_notif_settings['smtp_port'] = ""
         except Exception:
             new_notif_settings['smtp_port'] = ""
-        # --- END FIXED SMTP PORT SAVING LOGIC ---
         
         self.settings['push_notification_settings'] = new_notif_settings 
         self._save_all_settings(); 
         print("Push Notification settings saved.") 
 
-    # --- NEW: Status Request Settings Get/Save ---
     def get_status_request_settings(self):
         current_status_req_settings = self.settings.get('status_request_settings', {}).copy()
         defaults = self._get_default_status_request_settings()
@@ -1253,7 +1148,6 @@ class SettingsManager:
              if key not in current_status_req_settings:
                  current_status_req_settings[key] = default_value
         
-        # Ensure IMAP/SMTP ports are returned as int or ""
         for key in ['imap_port', 'smtp_port']:
             port_val = current_status_req_settings.get(key)
             if isinstance(port_val, str) and port_val.strip().isdigit():
@@ -1268,7 +1162,6 @@ class SettingsManager:
         for key in defaults.keys(): 
             if key not in new_status_req_settings: new_status_req_settings[key] = defaults[key]
         
-        # Ensure ports are saved as integers if valid, or "" if not.
         for key in ['imap_port', 'smtp_port']:
             port_val = new_status_req_settings.get(key)
             try:
@@ -1283,15 +1176,11 @@ class SettingsManager:
         self.settings['status_request_settings'] = new_status_req_settings
         self._save_all_settings()
         print("Status Request settings saved.") 
-    # --- END NEW STATUS REQUEST METHODS ---
     
-    # --- NEW: Desktop Shortcut / Terminal Management ---
     def _get_desktop_shortcut_path(self):
-        """Returns the standard path for the user's local application shortcut."""
         return os.path.expanduser("~/.local/share/applications/keglevel.desktop")
 
     def get_terminal_setting_state(self):
-        """Reads the .desktop file to see if Terminal is set to true. Robust against spacing."""
         path = self._get_desktop_shortcut_path()
         if not os.path.exists(path):
             return False
@@ -1299,10 +1188,8 @@ class SettingsManager:
         try:
             with open(path, 'r') as f:
                 for line in f:
-                    # Robust parse: Split by first '=' and strip whitespace from key
                     parts = line.split('=', 1)
                     if len(parts) == 2 and parts[0].strip() == "Terminal":
-                        # Check value (true/false)
                         return parts[1].strip().lower() == "true"
         except Exception as e:
             print(f"SettingsManager Error reading shortcut: {e}")
@@ -1310,12 +1197,10 @@ class SettingsManager:
         return False
 
     def save_terminal_setting_state(self, enable_terminal):
-        """Updates the .desktop file. Returns (Success, Message)."""
         path = self._get_desktop_shortcut_path()
         if not os.path.exists(path):
             return False, f"Shortcut not found at {path}"
 
-        # Check write permissions
         if not os.access(path, os.W_OK):
             return False, "File is read-only. Check permissions (likely owned by root)."
 
@@ -1330,14 +1215,12 @@ class SettingsManager:
 
             for line in lines:
                 parts = line.split('=', 1)
-                # Robust match for "Terminal = ..." or "Terminal=..."
                 if len(parts) == 2 and parts[0].strip() == "Terminal":
                     new_lines.append(f"Terminal={val}\n")
                     key_found = True
                 else:
                     new_lines.append(line)
             
-            # Fallback: If key not found, append it (though it should exist)
             if not key_found:
                 new_lines.append(f"Terminal={val}\n")
 

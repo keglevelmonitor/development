@@ -115,6 +115,9 @@ def main():
     from notification_service import NotificationService
     from temperature_logic import TemperatureLogic
     from sensor_logic import is_raspberry_pi
+    
+    # Import the new wizard
+    from setup_wizard import SetupWizard
 
     # Setup paths
     if os.path.exists('src'):
@@ -146,7 +149,28 @@ def main():
             sys.exit(0)
     
     # --- Normal Startup ---
+    # Initialize Settings Manager First
     settings_mgr = SettingsManager(num_configured_sensors)
+    
+    # --- PHASE 2: WIZARD CHECK ---
+    # Check if setup is complete. If not, launch Wizard.
+    if not settings_mgr.get_setup_complete():
+        print("Main: Setup not complete. Launching Wizard...")
+        try:
+            wizard = SetupWizard(settings_mgr)
+            success = wizard.run() # Blocks until wizard closes
+            
+            if not success:
+                print("Main: Setup cancelled by user. Exiting.")
+                sys.exit(0)
+            
+            # If successful, the settings are saved, proceed to main app launch
+            print("Main: Wizard complete. Launching UI.")
+            
+        except Exception as e:
+            print(f"Main: Error during setup wizard: {e}")
+            sys.exit(1)
+    # -----------------------------
     
     is_pi = is_raspberry_pi()
     print(f"Running on RPi hardware: {is_pi}")
@@ -184,7 +208,8 @@ def main():
     if ui.temp_logic and hasattr(ui, 'update_temperature_display'):
         ui.temp_logic.ui_callbacks["update_temp_display_cb"] = ui.update_temperature_display
         
-    # --- FIX: SCHEDULE EULA POPUP ---
+    # --- SCHEDULE EULA POPUP (Fallback) ---
+    # Note: If Wizard runs successfully, eula_agreed will be True, so this won't show.
     system_settings = settings_mgr.get_system_settings()
     eula_agreed = system_settings.get("eula_agreed", False)
     show_on_launch = system_settings.get("show_eula_on_launch", True)
@@ -193,14 +218,12 @@ def main():
         print("Main: Scheduling EULA popup (delayed).")
         # Delaying by 200ms allows the main loop to start and the window to be mapped
         root.after(200, lambda: ui._open_support_popup(is_launch=True))
-    # --- END FIX ---
 
-    # --- NEW: CHECK FOR UPDATES ON LAUNCH ---
+    # --- CHECK FOR UPDATES ON LAUNCH ---
     if settings_mgr.get_check_updates_on_launch():
         # Schedule it slightly later (e.g., 2 seconds) so the UI loads first
         print("Main: Scheduling update check on launch...")
         root.after(2000, lambda: ui._check_for_updates(is_launch_check=True))
-    # ----------------------------------------
 
     # Start Services
     if notification_svc: notification_svc.start_scheduler()
