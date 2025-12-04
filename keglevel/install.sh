@@ -117,10 +117,29 @@ else
 fi
 
 echo ""
-echo "==========================================================================="
-echo "   Installation Complete!"
+echo "================================================="
 echo ""
-echo "   At the Applications menu, select Other, KegLevel Monitor to run the app."
+echo "Installation complete!"
 echo ""
-echo "   You may need to reboot your RPi to refresh the menu."
-echo "==========================================================================="
+echo "At the Applications menu:"
+echo "   select Other, KegLevel Monitor to run the app."
+echo ""
+echo "================================================="
+echo ""
+
+read -p "Enter Y to launch the KegLevel Monitor app, or any other key to exit: " -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "Launching KegLevel Monitor..."
+    # Launch in background, detached from terminal
+    nohup "$VENV_PYTHON_EXEC" "$PROJECT_DIR/src/main.py" >/dev/null 2>&1 &
+    disown
+    
+    # Attempt to close the terminal window/session
+    # kill -HUP $PPID sends a hangup signal to the parent shell
+    kill -HUP $PPID
+    exit 0
+else
+    echo "Exiting installer."
+    exit 0
+fi

@@ -2625,24 +2625,17 @@ class PopupManagerMixin:
         
         print(f"Single Cal: Stopped. Pulses: {total_pulses}, Measured L: {final_measured_liters:.2f}")
         
-    def _single_cal_check_close(self, popup_window):
+    def _single_cal_check_close(self, popup_window, parent_window=None):
         """
         Intermediary function called when the user attempts to close the calibration popup.
         Checks if a new factor was calculated but not set.
         """
         # STEP 1: If calibration was in progress, stop it gracefully.
-        # This will calculate _single_cal_calculated_new_factor and enable the 'Set' button.
         if self._single_cal_in_progress and hasattr(self.sensor_logic, 'stop_flow_calibration'):
-            # We call stop, which runs the calculation and updates the internal state.
             if self.single_cal_tap_index != -1:
-                # Note: The result (pulses, pour) is discarded here, but the side effect
-                # of updating _single_cal_calculated_new_factor and the UI happens in _single_cal_stop.
-                # Call _single_cal_stop directly to ensure all state is updated.
-                self._single_cal_stop() # <-- Call _single_cal_stop instead of stop_flow_calibration
+                self._single_cal_stop() 
 
         # STEP 2: Check if a new factor exists.
-        # Check against the internal state variable, not the button state, as the button may have
-        # been enabled by _single_cal_stop() which was just called in Step 1.
         if self._single_cal_calculated_new_factor is not None:
             # New factor calculated but not accepted (button is active)
 
@@ -2669,15 +2662,33 @@ class PopupManagerMixin:
 
             # Define combined close action (saves, then closes both)
             def set_and_close():
-                # Pass destroy_on_success=True to ensure the primary popup is destroyed
-                self._single_cal_set(destroy_on_success=True, primary_popup=popup_window)
+                # We save, which effectively completes the task.
+                self._single_cal_set(destroy_on_success=False, primary_popup=popup_window)
+                self._single_cal_calculated_new_factor = None
+                self._single_cal_popup_window = None
+                
+                # Close Confirmation
                 confirm_popup.destroy()
+                
+                # --- FIX: Restore grab to parent before closing popup ---
+                if parent_window and parent_window.winfo_exists():
+                    parent_window.grab_set()
+                # ------------------------------------------------------
+                
+                popup_window.destroy()
 
             # Define discard action (just closes both)
             def discard_and_close():
                 self._single_cal_calculated_new_factor = None # Discard the value
                 self._single_cal_popup_window = None
+                
                 confirm_popup.destroy()
+                
+                # --- FIX: Restore grab to parent before closing popup ---
+                if parent_window and parent_window.winfo_exists():
+                    parent_window.grab_set()
+                # ------------------------------------------------------
+                
                 popup_window.destroy()
 
             ttk.Button(btns_frame, text="Close (Discard Factor)", command=discard_and_close).pack(side="right", padx=5)
@@ -2689,6 +2700,12 @@ class PopupManagerMixin:
         else:
             # Safe to close. Perform final cleanup.
             self._single_cal_popup_window = None
+            
+            # --- FIX: Restore grab to parent before closing popup ---
+            if parent_window and parent_window.winfo_exists():
+                parent_window.grab_set()
+            # ------------------------------------------------------
+            
             popup_window.destroy()
             
     def _open_single_tap_calibration_popup(self, tap_index, parent_popup):
@@ -2737,7 +2754,9 @@ class PopupManagerMixin:
         popup.grab_set()
         
         self._single_cal_popup_window = popup 
-        popup.protocol("WM_DELETE_WINDOW", lambda p=popup: self._single_cal_check_close(p))
+        
+        # --- FIX: Pass parent_popup to the check_close handler ---
+        popup.protocol("WM_DELETE_WINDOW", lambda p=popup, pp=parent_popup: self._single_cal_check_close(p, pp))
 
         main_frame = ttk.Frame(popup, padding="15"); 
         main_frame.pack(expand=True, fill="both")
@@ -2819,15 +2838,16 @@ class PopupManagerMixin:
         buttons_frame = ttk.Frame(popup, padding="10"); 
         buttons_frame.pack(fill="x", side="bottom")
         
-        ttk.Button(buttons_frame, text="Close", command=lambda p=popup: self._single_cal_check_close(p)).pack(side="right")
+        # --- FIX: Pass parent_popup here too ---
+        ttk.Button(buttons_frame, text="Close", command=lambda p=popup, pp=parent_popup: self._single_cal_check_close(p, pp)).pack(side="right")
         
         # NEW Help Button
         ttk.Button(buttons_frame, text="Help", width=8, 
                    command=lambda: self._open_help_popup("calibration")).pack(side="right", padx=5)
                    
-        # --- REMOVED: Focus logic to prevent freezing ---
-        # if hasattr(self, '_single_cal_volume_entry') and self._single_cal_volume_entry:
-        #    self._single_cal_volume_entry.focus_set()
+        # --- MOVED: Dev Tools Button (Now here) ---
+        ttk.Button(buttons_frame, text="Dev Tools", width=10, 
+                   command=lambda: self._open_dev_warning_popup(popup)).pack(side="left", padx=5)
         
     def _single_cal_start(self):
         # Validation
@@ -3365,17 +3385,24 @@ class PopupManagerMixin:
         tap_var = tk.StringVar(value=tap_options[0])
         ttk.Combobox(select_frame, textvariable=tap_var, values=tap_options, state="readonly", width=10).pack(side="left")
 
-        # 2. Volume
+        # 2. Volume (Unit-Aware)
+        display_units = self.settings_manager.get_display_units()
+        is_metric = (display_units == "metric")
+        
         vol_frame = ttk.Frame(main_frame); vol_frame.pack(fill="x", pady=5)
         ttk.Label(vol_frame, text="Volume to Pour:", width=15).pack(side="left")
         
-        vol_var = tk.StringVar(value="0.5") # Default 0.5 Liters
+        # Set defaults based on unit system
+        default_vol = "500" if is_metric else "16"
+        unit_label = "ml" if is_metric else "oz"
+        
+        vol_var = tk.StringVar(value=default_vol) 
         ttk.Entry(vol_frame, textvariable=vol_var, width=10).pack(side="left")
-        ttk.Label(vol_frame, text="Liters (Raw)").pack(side="left", padx=5)
+        ttk.Label(vol_frame, text=unit_label).pack(side="left", padx=5)
 
-        # 3. Flow Rate
+        # 3. Flow Rate (Always L/min)
         rate_frame = ttk.Frame(main_frame); rate_frame.pack(fill="x", pady=5)
-        ttk.Label(rate_frame, text="Flow Speed:", width=15).pack(side="left")
+        ttk.Label(rate_frame, text="Flow Rate:", width=15).pack(side="left")
         
         rate_var = tk.StringVar(value="2.00") # Default 2.0 LPM
         ttk.Entry(rate_frame, textvariable=rate_var, width=10).pack(side="left")
@@ -3394,19 +3421,27 @@ class PopupManagerMixin:
             try:
                 # Parse inputs
                 tap_idx = int(tap_var.get().split(" ")[1]) - 1
-                vol = float(vol_var.get())
+                user_vol = float(vol_var.get())
                 rate = float(rate_var.get())
                 should_deduct = deduct_var.get()
                 
-                if vol <= 0 or rate <= 0:
+                if user_vol <= 0 or rate <= 0:
                     messagebox.showerror("Error", "Volume and Rate must be positive.", parent=dev_popup)
                     return
 
+                # Convert input to Liters for the Logic layer
+                if is_metric:
+                    vol_liters = user_vol / 1000.0
+                else:
+                    vol_liters = user_vol * OZ_TO_LITERS
+
                 # Send command to logic
                 if hasattr(self, 'sensor_logic') and self.sensor_logic:
-                    self.sensor_logic.simulate_pour(tap_idx, vol, rate, deduct_volume=should_deduct)
+                    self.sensor_logic.simulate_pour(tap_idx, vol_liters, rate, deduct_volume=should_deduct)
                     action_text = "DEDUCTING" if should_deduct else "TEST ONLY (Reverting)"
-                    status_label.config(text=f"Simulating {vol}L on Tap {tap_idx+1} ({action_text})...", foreground="green")
+                    
+                    # Update status with user's units
+                    status_label.config(text=f"Simulating {user_vol} {unit_label} on Tap {tap_idx+1} ({action_text})...", foreground="green")
                 else:
                      status_label.config(text="Sensor Logic not connected.", foreground="red")
                      
@@ -3421,7 +3456,7 @@ class PopupManagerMixin:
         
         # --- FIX: Grab last ---
         dev_popup.grab_set()
-
+        
     def _update_conditional_threshold_units(self):
         current_units = self.settings_manager.get_display_units()
         
