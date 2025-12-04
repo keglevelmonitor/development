@@ -141,8 +141,9 @@ class SetupWizard:
         ttk.Label(self.content_frame, text="Support the Project", font=('TkDefaultFont', 16, 'bold')).pack(pady=(0, 10))
         
         msg = (
-            "This App took hundreds of hours to develop. Please consider supporting "
-            "future updates with a donation. Thank you!"
+            "This app took hundreds of hours to develop, test, and optimize. "
+            "Please consider supporting this app with a donation so continuous "
+            "improvements can be made. Thank you!"
         )
         ttk.Label(self.content_frame, text=msg, wraplength=600, justify="center").pack(pady=(0, 20))
         

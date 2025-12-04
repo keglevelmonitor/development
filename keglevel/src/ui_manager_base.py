@@ -12,6 +12,7 @@ import uuid
 import subprocess 
 import sys      
 import re
+from datetime import datetime # Added for dynamic versioning
 
 # --- NEW: Import platform flag from sensor_logic ---
 try:
@@ -27,9 +28,38 @@ except ImportError:
     UNASSIGNED_KEG_ID = "unassigned_keg_id"
     UNASSIGNED_BEVERAGE_ID = "unassigned_beverage_id"
 
+# --- NEW: Dynamic Application Revision Logic ---
+def _generate_dynamic_revision():
+    """
+    Scans the src directory for the most recently modified .py file.
+    Returns a timestamp string like: "20231027.1430"
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    latest_mtime = 0
+    
+    # 1. Find latest timestamp from any .py file in src
+    try:
+        for root, dirs, files in os.walk(base_dir):
+            for file in files:
+                if file.endswith(".py"):
+                    full_path = os.path.join(root, file)
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                        if mtime > latest_mtime:
+                            latest_mtime = mtime
+                    except OSError:
+                        pass
+    except Exception as e:
+        print(f"Version Check Error: {e}")
 
-# --- NEW: Application Revision Variable ---
-APP_REVISION = "20251203.02 Reflow" 
+    if latest_mtime > 0:
+        # Return ONLY the timestamp. 
+        # The 'About' popup adds the "(Commit: xyz)" part automatically.
+        return datetime.fromtimestamp(latest_mtime).strftime("%Y%m%d.%H%M")
+    else:
+        return "Dev.Build"
+
+APP_REVISION = _generate_dynamic_revision()
 # ------------------------------------------
 
 LITERS_TO_GALLONS = 0.264172
@@ -1115,6 +1145,15 @@ class MainUIBase:
                 self.settings_manager.save_window_geometry(current_geometry)
             except Exception as e:
                 print(f"UIManager: Could not save window geometry: {e}")
+
+        # --- NEW: Save Workflow Geometry if open ---
+        # This handles the case where the user closes the Main UI while Workflow is still open
+        if self.workflow_app:
+             try:
+                 self.workflow_app.save_geometry()
+             except Exception as e:
+                 print(f"UIManager: Could not save workflow geometry: {e}")
+        # -------------------------------------------
 
         current_sensor_names = [sv.get() for sv in self.sensor_name_texts]
         self.settings_manager.save_sensor_labels(current_sensor_names) 

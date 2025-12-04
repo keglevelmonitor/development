@@ -110,10 +110,35 @@ class SettingsManager:
             "window_geometry": None,
             "check_updates_on_launch": True,
             "notify_on_update": True,
-            # --- NEW: Setup Flag ---
-            "setup_complete": False
-            # -----------------------
+            "setup_complete": False,
+            "workflow_view_mode": "paged",
+            # --- NEW: Workflow Window Geometry ---
+            "workflow_window_geometry": None
+            # -------------------------------------
         }
+
+    # --- NEW METHODS for Workflow Window Geometry ---
+    def get_workflow_window_geometry(self):
+        return self.get_system_settings().get('workflow_window_geometry')
+
+    def save_workflow_window_geometry(self, geometry_string):
+        sys_set = self.settings.get('system_settings', self._get_default_system_settings())
+        sys_set['workflow_window_geometry'] = geometry_string
+        self.settings['system_settings'] = sys_set
+        self._save_all_settings()
+
+    # --- NEW METHODS for Workflow View Mode ---
+    def get_workflow_view_mode(self):
+        """Returns 'paged' or 'dashboard'."""
+        return self.get_system_settings().get('workflow_view_mode', 'paged')
+
+    def save_workflow_view_mode(self, mode):
+        if mode in ['paged', 'dashboard']:
+            sys_set = self.settings.get('system_settings', self._get_default_system_settings())
+            sys_set['workflow_view_mode'] = mode
+            self.settings['system_settings'] = sys_set
+            self._save_all_settings()
+            print(f"SettingsManager: Workflow view mode saved: {mode}")
         
     def get_setup_complete(self):
         return self.get_system_settings().get('setup_complete', False)

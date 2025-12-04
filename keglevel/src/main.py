@@ -208,17 +208,20 @@ def main():
     if ui.temp_logic and hasattr(ui, 'update_temperature_display'):
         ui.temp_logic.ui_callbacks["update_temp_display_cb"] = ui.update_temperature_display
         
-    # --- SCHEDULE EULA POPUP (Fallback) ---
+# --- SCHEDULE EULA POPUP (Fallback) ---
     # Note: If Wizard runs successfully, eula_agreed will be True, so this won't show.
     system_settings = settings_mgr.get_system_settings()
     eula_agreed = system_settings.get("eula_agreed", False)
-    show_on_launch = system_settings.get("show_eula_on_launch", True)
+    
+    # We now strictly respect eula_agreed. 'show_eula_on_launch' is deprecated but checked for safety.
+    show_on_launch = system_settings.get("show_eula_on_launch", False)
     
     if not eula_agreed or show_on_launch:
-        print("Main: Scheduling EULA popup (delayed).")
+        print("Main: EULA not agreed. Scheduling EULA popup.")
         # Delaying by 200ms allows the main loop to start and the window to be mapped
-        root.after(200, lambda: ui._open_support_popup(is_launch=True))
-
+        # CALLS THE NEW RENAMED FUNCTION: _open_eula_popup
+        root.after(200, lambda: ui._open_eula_popup(is_launch=True))
+        
     # --- CHECK FOR UPDATES ON LAUNCH ---
     if settings_mgr.get_check_updates_on_launch():
         # Schedule it slightly later (e.g., 2 seconds) so the UI loads first

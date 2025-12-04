@@ -169,16 +169,12 @@ class ProcessFlowApp:
     def __init__(self, root_window, settings_manager, base_dir, parent_root=None):
         self.parent_root = parent_root
         self.settings_manager = settings_manager
-        self.base_dir = base_dir # This is the app's base directory
+        self.base_dir = base_dir 
         
-        # --- NEW: Check and store UI mode ---
-        self.ui_mode = self.settings_manager.get_system_settings().get('ui_mode', 'full') 
-        self.is_full_mode = (self.ui_mode == 'full')
+        self.view_mode = self.settings_manager.get_workflow_view_mode() 
         
-        # Pass base_dir argument (redundant now but kept for consistency)
         self.manager = InventoryManager(settings_manager, self.base_dir) 
         
-        # Use the list stored by the InventoryManager
         self.all_beverages = self.manager.beverage_library
         self.beverage_names = sorted([b.get('name', 'Untitled') for b in self.all_beverages if b.get('id')])
         self.beverage_names.insert(0, "-- Add Beverage --")
@@ -186,22 +182,25 @@ class ProcessFlowApp:
         
         self.column_combobox_vars = {col: tk.StringVar(value="-- Add Beverage --") for col in self.INVENTORY_COLUMNS}
         
-        # --- FIX: Assign the passed root_window (which is now a Toplevel) to self.popup ---
         self.popup = root_window
-        # -----------------------------------------------------------------------------------------
-            
-        # --- MODIFIED: Keep label 'KegLevel Workflow' intact ---
         self.popup.title("KegLevel Workflow")
-        # ------------------------------------------------------
         
-        # --- START: CONDITIONAL GEOMETRY FIX (REMOVED - now handled by UIManager) ---
-        # All geometry logic removed from here.
-        # --- END: CONDITIONAL GEOMETRY FIX ---
+        # --- NEW: Restore Saved Geometry ---
+        saved_geo = self.settings_manager.get_workflow_window_geometry()
+        if saved_geo:
+            try:
+                self.popup.geometry(saved_geo)
+            except Exception:
+                pass # Ignore invalid geometry
+        # -----------------------------------
+
+        # --- NEW: Bind Close Event to Save Geometry ---
+        self.popup.protocol("WM_DELETE_WINDOW", self._on_close)
+        # ----------------------------------------------
         
-        # --- REMOVED: self.popup.grab_set() (Now called in the new run() method) ---
+        self._apply_window_jiggle_fix()
         
         self.column_names = self.INVENTORY_COLUMNS
-        # Display titles remain the same, just the order of the keys in INVENTORY_COLUMNS changed.
         self.display_titles = {
             "lagering_or_finishing": "Lagering or Finishing (kegged)", 
             "fermenting": "Fermenting", 
@@ -211,8 +210,89 @@ class ProcessFlowApp:
         
         self._setup_styles() 
         self._create_widgets()
+
+    # --- NEW: Helper to save geometry independently ---
+    def save_geometry(self):
+        """Saves the current window geometry to settings if the window is active."""
+        if not self.popup: return
+        try:
+            if self.popup.winfo_exists():
+                current_geo = self.popup.geometry()
+                self.settings_manager.save_workflow_window_geometry(current_geo)
+        except Exception as e:
+            print(f"WorkflowApp Warning: Could not save geometry: {e}")
+
+    # MODIFIED: _on_close uses the helper
+    def _on_close(self):
+        """Saves the current window geometry and closes the window."""
+        self.save_geometry()
+        # Proceed with closing
+        self.popup.destroy()
+
+    def _apply_window_jiggle_fix(self):
+        """
+        Applies the 'jiggle' fix to force the window manager to recognize resizing handles.
+        Moves the window 1px and back after mapping.
+        """
+        # 1. Disable resizing initially to ensure state change triggers update
+        self.popup.resizable(False, False)
         
-        # Initial column refresh is now triggered via the new run() method
+        def jiggle_window(event):
+            if event.widget != self.popup: return
+            self.popup.unbind("<Map>")
+            
+            # Enable resizing now that window is visible
+            self.popup.resizable(True, True)
+            
+            def _step_1_move():
+                try:
+                    # Use winfo_x/y for accurate content coordinates
+                    x = self.popup.winfo_x()
+                    y = self.popup.winfo_y()
+                    w = self.popup.winfo_width()
+                    h = self.popup.winfo_height()
+                    
+                    # Store original for restore
+                    self._jiggle_restore_x = x
+                    self._jiggle_restore_y = y
+                    
+                    # Move 1px right
+                    self.popup.geometry(f"{w}x{h}+{x+1}+{y}")
+                    
+                    # Schedule Step 2
+                    self.popup.after(100, _step_2_restore)
+                except Exception as e:
+                    print(f"Workflow Warning: Jiggle Step 1 failed: {e}")
+
+            def _step_2_restore():
+                try:
+                    # Restore original position
+                    x = self._jiggle_restore_x
+                    y = self._jiggle_restore_y
+                    w = self.popup.winfo_width()
+                    h = self.popup.winfo_height()
+                    self.popup.geometry(f"{w}x{h}+{x}+{y}")
+                except Exception as e:
+                    print(f"Workflow Warning: Jiggle Step 2 failed: {e}")
+
+            # Run Step 1 500ms after map to allow WM to settle
+            self.popup.after(500, _step_1_move)
+            
+        self.popup.bind("<Map>", jiggle_window)
+
+    # --- NEW: Helper to toggle view mode ---
+    def _set_view_mode(self, mode):
+        if mode not in ['dashboard', 'paged']: return
+        if mode == self.view_mode: return
+        
+        print(f"WorkflowApp: Switching view to {mode}")
+        self.view_mode = mode
+        self.settings_manager.save_workflow_view_mode(mode)
+        
+        # Rebuild the UI
+        self._create_widgets()
+        # Refresh the data in the new widgets
+        self._refresh_all_columns()
         
     def run(self):
         """Finalizes setup when hosted by UIManager."""
@@ -231,11 +311,26 @@ class ProcessFlowApp:
         s.configure("Condensed.TButton", padding=(0, 0), width=2)
         
     def _create_widgets(self):
+        # 1. Clear existing widgets (for refresh/toggle)
+        for widget in self.popup.winfo_children():
+            widget.destroy()
+
         # --- Top Control Bar ---
         control_frame = ttk.Frame(self.popup, padding=(10, 5, 10, 5))
         control_frame.pack(fill="x", side="top")
         
-        # Space Filler (This now collapses the control_frame, removing the entire top bar)
+        # View Mode Toggle Menu (Left Side)
+        current_view_label = "Dashboard (4-Col)" if self.view_mode == 'dashboard' else "Paged (Tabs)"
+        view_btn = ttk.Menubutton(control_frame, text=f"View: {current_view_label}")
+        view_menu = tk.Menu(view_btn, tearoff=0)
+        view_btn["menu"] = view_menu
+        
+        view_menu.add_command(label="Dashboard View (4-Col)", command=lambda: self._set_view_mode("dashboard"))
+        view_menu.add_command(label="Paged View (Tabs)", command=lambda: self._set_view_mode("paged"))
+        
+        view_btn.pack(side="left")
+        
+        # Space Filler
         ttk.Frame(control_frame).pack(side="left", expand=True, fill="x")
         
         # --- Main Column Frame ---
@@ -243,34 +338,31 @@ class ProcessFlowApp:
         main_frame.pack(expand=True, fill="both")
         
         # --- CONDITIONAL LAYOUT LOGIC ---
-        if self.is_full_mode:
+        if self.view_mode == 'dashboard':
             # Full Mode: 4 columns in a single grid row
             for col_idx in range(len(self.column_names)): 
                 main_frame.grid_columnconfigure(col_idx, weight=1, uniform="col_group")
             main_frame.grid_rowconfigure(0, weight=1)
             
             columns_to_process = self.column_names
-            container_for_columns = main_frame 
+            # Helper logic for the loop below
+            is_dashboard = True 
 
-        else: # Lite Mode: Tabbed, Two-Column per Tab Layout
+        else: # 'paged' mode
             notebook = ttk.Notebook(main_frame)
             notebook.pack(expand=True, fill="both")
             
             # Tab 1: On Rotation / On Deck
             tab1_frame = ttk.Frame(notebook, padding=0)
             tab1_frame.pack(expand=True, fill="both")
-            # --- FIX 2: Change Tab 1 Name ---
             notebook.add(tab1_frame, text="On Rotation & On Deck")
-            # -------------------------------
             tab1_frame.grid_columnconfigure(0, weight=1, uniform="tab_col_group"); tab1_frame.grid_columnconfigure(1, weight=1, uniform="tab_col_group")
             tab1_frame.grid_rowconfigure(0, weight=1)
             
             # Tab 2: Fermenting / Lagering
             tab2_frame = ttk.Frame(notebook, padding=0)
             tab2_frame.pack(expand=True, fill="both")
-            # --- FIX 2: Change Tab 2 Name ---
             notebook.add(tab2_frame, text="Fermenting & Lagering/Finishing")
-            # -------------------------------
             tab2_frame.grid_columnconfigure(0, weight=1, uniform="tab_col_group"); tab2_frame.grid_columnconfigure(1, weight=1, uniform="tab_col_group")
             tab2_frame.grid_rowconfigure(0, weight=1)
 
@@ -281,24 +373,26 @@ class ProcessFlowApp:
                 self.column_names[2]: (tab2_frame, 0), # fermenting
                 self.column_names[3]: (tab2_frame, 1)  # lagering_or_finishing
             }
-        # --- END CONDITIONAL LAYOUT LOGIC ---
+            is_dashboard = False
 
         self.column_frames = {}; self.column_canvases = {}; self.inner_frames = {}
         self.column_comboboxes = {}
         
-        for col_idx, col_name in enumerate(self.column_names):
+        # Iterate over columns (using the logic defined above)
+        iterator = enumerate(columns_to_process) if is_dashboard else enumerate(columns_to_process.keys())
+        
+        for col_idx, col_name in iterator:
             col_title = self.display_titles[col_name]
             
             # Determine container and grid position based on mode
-            if self.is_full_mode:
+            if is_dashboard:
                 container = main_frame
                 grid_col_index = col_idx
             else:
                 container, grid_col_index = columns_to_process[col_name]
             
-            # --- Column Frame (Container for Header, Combobox, and Scrollable Area) ---
+            # --- Column Frame ---
             col_frame = ttk.Frame(container, relief="flat", padding=2)
-            # Use the calculated container and grid position
             col_frame.grid(row=0, column=grid_col_index, sticky="nsew", padx=5, pady=0)
             
             # 1. Header and Combobox Container
@@ -310,13 +404,10 @@ class ProcessFlowApp:
             title_add_frame.pack(fill="x", pady=(0, 2))
             title_add_frame.grid_columnconfigure(0, weight=1)
             
-            # Column Title (Left Side, Takes space)
             ttk.Label(title_add_frame, text=col_title, font=('TkDefaultFont', 10, 'bold'), relief="raised", padding=5).grid(row=0, column=0, sticky='ew')
             
-            # New: Add Button (Right Side)
             ttk.Button(title_add_frame, text="Add ▼", width=5,
                        command=lambda cn=col_name: self._handle_add_button(cn)).grid(row=0, column=1, sticky='e')
-
 
             # --- ROW 2: Combobox ---
             combobox = ttk.Combobox(header_container, 
@@ -328,7 +419,6 @@ class ProcessFlowApp:
             self.column_comboboxes[col_name] = combobox
 
             # 2. Scrollable Content Setup
-            # BACKGROUND CHANGE: Set to Dark Gray (#D9D9D9)
             canvas = tk.Canvas(col_frame, borderwidth=0, background="#D9D9D9")
             v_scrollbar = ttk.Scrollbar(col_frame, orient="vertical", command=canvas.yview)
             inner_frame = ttk.Frame(canvas, padding=5)

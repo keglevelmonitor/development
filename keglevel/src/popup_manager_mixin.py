@@ -162,7 +162,7 @@ class PopupManagerMixin:
         self.show_eula_checkbox_var = tk.BooleanVar()
         self.support_qr_image = None
         
-# --- NEW: Helper for checking git status (Used by UI and NotificationService) ---
+    # --- NEW: Helper for checking git status (Used by UI and NotificationService) ---
     def check_update_available(self):
         """
         Checks if the local git branch is behind origin.
@@ -910,7 +910,7 @@ class PopupManagerMixin:
         
         self.settings_menu.add_separator()
         
-        # --- 3. Maintenance (NEW SECTION) ---
+        # --- 3. Maintenance ---
         self.settings_menu.add_command(label="Maintenance", font=self.menu_heading_font, state="disabled")
         self.settings_menu.add_command(label="Check for Updates", command=self._check_for_updates)
         self.settings_menu.add_command(label="Reset to Defaults", command=self._open_reset_to_defaults_popup)
@@ -918,14 +918,14 @@ class PopupManagerMixin:
         
         self.settings_menu.add_separator()
         
-        # --- 4. App Info (RENAMED) ---
+        # --- 4. App Info ---
         self.settings_menu.add_command(label="App Info", font=self.menu_heading_font, state="disabled")
         self.settings_menu.add_command(label="Wiring Diagram", command=self._open_wiring_diagram_popup)
         
-        # NEW: Help Placeholder
         self.settings_menu.add_command(label="Help", command=self._open_help_popup)
         
-        self.settings_menu.add_command(label="Support this App", command=lambda: self._open_support_popup(is_launch=False))
+        # RENAMED: Support this App -> EULA
+        self.settings_menu.add_command(label="EULA", command=lambda: self._open_eula_popup(is_launch=False))
         self.settings_menu.add_command(label="About...", command=self._open_about_popup)
 
     def _open_about_popup(self):
@@ -935,21 +935,26 @@ class PopupManagerMixin:
              APP_REVISION = "Unknown"
              
         popup = tk.Toplevel(self.root)
-        popup.title("About..."); popup.geometry("750x520"); popup.resizable(False, False); popup.transient(self.root); popup.grab_set()
+        popup.title("About KegLevel Monitor")
+        # Increased height slightly to accommodate the support info
+        self._center_popup(popup, 750, 580)
+        
+        popup.transient(self.root)
+        popup.grab_set()
 
-        frame = ttk.Frame(popup, padding="10"); frame.pack(expand=True, fill="both")
+        frame = ttk.Frame(popup, padding="15")
+        frame.pack(expand=True, fill="both")
+
+        # --- Header Section ---
+        ttk.Label(frame, text="KegLevel Monitor", font=('TkDefaultFont', 14, 'bold')).pack(pady=(0, 10))
 
         copyright_text = (
             "KegLevel Monitor(c) and KegLevel Workflow(c) names, texts, UI/UX "
-            "(User Interface/User Experience or Graphical User Interface) and program code are copyrighted. "
-            "This material and all components of this program are protected by "
+            "and program code are copyrighted. This material and all components of this program are protected by "
             "copyright law. Unauthorized use, duplication, or distribution is "
-            "strictly prohibited. This application is in beta testing. To request beta test status send a "
-            "request including your full name and email address to KegLevelMonitor@gmail.com."
+            "strictly prohibited."
         )
-
-        ttk.Label(frame, text="KegLevel Monitor", font=('TkDefaultFont', 14, 'bold')).pack(pady=(0, 10))
-        ttk.Label(frame, text=copyright_text, wraplength=700, justify=tk.LEFT).pack(anchor='w', pady=(0, 10))
+        ttk.Label(frame, text=copyright_text, wraplength=700, justify=tk.LEFT).pack(anchor='w', pady=(0, 5))
         
         version_display = self.app_version_string if self.app_version_string else 'Unknown'
         commit_hash = self.get_git_commit_hash()
@@ -959,11 +964,41 @@ class PopupManagerMixin:
         else:
             version_text = f"Version: {version_display}"
                        
-        ttk.Label(frame, text=version_text, font=('TkDefaultFont', 10, 'italic')).pack(anchor='w', pady=(5, 5))
+        ttk.Label(frame, text=version_text, font=('TkDefaultFont', 10, 'italic')).pack(anchor='w', pady=(0, 15))
         
-        self._add_changelog_section(frame, popup) 
+        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=5)
+
+        # --- MOVED: Support / Donation Section ---
+        self._load_support_image()
         
-        # Function to open the link in a browser (Tkinter friendly)
+        support_frame = ttk.Frame(frame)
+        support_frame.pack(fill="x", pady=10)
+        
+        # Left side: Text
+        support_text_container = ttk.Frame(support_frame)
+        support_text_container.pack(side="left", fill="both", expand=True, padx=(0, 15))
+        
+        support_header = "Support this Project"
+        ttk.Label(support_text_container, text=support_header, font=('TkDefaultFont', 11, 'bold')).pack(anchor='w', pady=(0, 5))
+        
+        support_msg = (
+            "This App took hundreds of hours to develop, test, and optimize. "
+            "Please consider supporting this App with a donation so continuous improvements "
+            "can be made.\n\n"
+            "If you wish to receive customer support via email, please make a reasonable "
+            "donation. Customer support requests without a donation may not be considered."
+        )
+        ttk.Label(support_text_container, text=support_msg, wraplength=480, justify="left").pack(anchor='w')
+
+        # Right side: QR Code
+        if self.support_qr_image:
+            qr_label = ttk.Label(support_frame, image=self.support_qr_image, relief="groove", borderwidth=1)
+            qr_label.pack(side="right", anchor="n")
+        else:
+            ttk.Label(support_frame, text="[QR Code Missing]", relief="sunken", padding=20).pack(side="right")
+
+        # --- Footer Section ---
+        # Function to open the link in a browser
         def open_flaticon_link(event):
             try:
                 import webbrowser
@@ -980,25 +1015,181 @@ class PopupManagerMixin:
             wraplength=700, 
             justify=tk.LEFT
         )
-        # Pack the link label first to ensure it's at the absolute bottom
-        link_label.pack(fill="x", side="bottom", pady=(0, 5), padx=10) 
+        # Pack at bottom
+        link_label.pack(fill="x", side="bottom", pady=5, padx=15) 
         link_label.bind("<Button-1>", open_flaticon_link)
         
-        buttons_frame = ttk.Frame(popup, padding=(10, 5)); 
-        # Pack buttons just above the attribution frame
+        buttons_frame = ttk.Frame(popup, padding=(10, 5))
         buttons_frame.pack(fill="x", side="bottom") 
         
         ttk.Button(buttons_frame, text="Close", command=popup.destroy, width=10).pack(side="right", pady=5)
         
-        # NEW Help Button
         ttk.Button(buttons_frame, text="Help", width=8,
                    command=lambda: self._open_help_popup("about")).pack(side="right", padx=5, pady=5)
-        
-        ttk.Button(buttons_frame, text="Support this App", command=lambda: self._open_support_popup(is_launch=False), width=15).pack(side="left", padx=(0, 5), pady=5)
-        
-        popup.update_idletasks()
-        popup.geometry("750x520")
 
+    def _open_eula_popup(self, is_launch=False):
+        """
+        Displays the EULA popup.
+        Renamed from _open_support_popup.
+        """
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        
+        popup.title("End User License Agreement (EULA)")
+        
+        # --- 1. Reset UI Variables ---
+        system_settings = self.settings_manager.get_system_settings()
+        
+        has_agreed = system_settings.get("eula_agreed", False)
+        if has_agreed:
+            self.eula_agreement_var.set(1) 
+        else:
+            self.eula_agreement_var.set(0) 
+        
+        # --- 2. Build UI ---
+        main_frame = ttk.Frame(popup, padding="15")
+        main_frame.pack(fill="both", expand=True)
+
+        # --- EULA Text Section ---
+        eula_frame = ttk.LabelFrame(main_frame, text="Terms and Conditions", padding=10)
+        eula_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        eula_text_widget = scrolledtext.ScrolledText(eula_frame, height=10, wrap="word", relief="flat")
+        eula_text_widget.pack(fill="both", expand=True)
+        
+        try:
+            bold_font = tkfont.nametofont("TkDefaultFont").copy()
+            bold_font.config(weight="bold")
+            eula_text_widget.tag_configure("bold", font=bold_font)
+        except:
+            eula_text_widget.tag_configure("bold", font=('TkDefaultFont', 10, 'bold'))
+        
+        eula_text_widget.config(state="normal")
+        eula_text_widget.insert("end", "End User License Agreement (EULA)\n\n", "bold")
+        eula_text_widget.insert("end", "1. Scope of Agreement\n", "bold")
+        eula_text_widget.insert("end", (
+            "This Agreement applies to the \"Keg Level Monitor\" software (hereafter \"this app\"). "
+            "\"This app\" includes the main software program and all related software and hardware components.\n\n"
+        ))
+        eula_text_widget.insert("end", "2. Acceptance of Responsibility\n", "bold")
+        eula_text_widget.insert("end", (
+            "By using this app, you, the user, accept all responsibility for any consequence or "
+            "outcome arising from the use of, or inability to use, this app.\n\n"
+        ))
+        eula_text_widget.insert("end", "3. No Guarantee or Warranty\n", "bold")
+        eula_text_widget.insert("end", (
+            "This app is provided \"as is.\" It provides no guarantee of usefulness or fitness "
+            "for any particular purpose. The app provides no warranty, expressed or implied. "
+            "You use this app entirely at your own risk.\n"
+        ))
+        eula_text_widget.config(state="disabled")
+
+        # --- Agreement Section ---
+        agreement_frame = ttk.Frame(main_frame)
+        agreement_frame.pack(fill="x")
+
+        # Radio 1: Agree
+        agree_rb = ttk.Radiobutton(agreement_frame, 
+                                   text="I agree with the above End User License Agreement", 
+                                   variable=self.eula_agreement_var, value=1)
+        agree_rb.pack(anchor="w")
+        agree_note = ttk.Label(agreement_frame, text="You may proceed to the app after clicking Confirm",
+                               font=('TkDefaultFont', 8, 'italic'))
+        agree_note.pack(anchor="w", padx=(20, 0), pady=(0, 5))
+
+        # Radio 2: Disagree
+        disagree_rb = ttk.Radiobutton(agreement_frame, 
+                                     text="I do not agree with the above End User License Agreement", 
+                                     variable=self.eula_agreement_var, value=2)
+        disagree_rb.pack(anchor="w")
+        disagree_note = ttk.Label(agreement_frame, text="The application will exit if you select this option",
+                                 font=('TkDefaultFont', 8, 'italic'))
+        disagree_note.pack(anchor="w", padx=(20, 0), pady=(0, 10))
+
+        # --- Bottom Section ---
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill="x", side="bottom", pady=(10, 0))
+
+        close_btn = ttk.Button(bottom_frame, text="Confirm & Close", 
+                               command=lambda: self._handle_eula_popup_close(popup))
+        close_btn.pack(side="right")
+        
+        # Help Button
+        ttk.Button(bottom_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("support")).pack(side="right", padx=5)
+
+        # --- Finalize Popup ---
+        popup_width = 700
+        popup_height = 500
+        self._center_popup(popup, popup_width, popup_height)
+        popup.resizable(False, False)
+        
+        # Modal logic for launch
+        if is_launch:
+            popup.protocol("WM_DELETE_WINDOW", lambda: self._handle_eula_popup_close(popup))
+            popup.transient(self.root)
+            popup.lift()
+            popup.focus_force()
+            popup.grab_set()
+            try:
+                self.root.wait_window(popup)
+            except tk.TclError:
+                pass
+        else:
+            popup.transient(self.root)
+            popup.grab_set()
+
+    def _handle_eula_popup_close(self, popup):
+        """Handles the logic for the 'Close' button on the EULA popup."""
+        
+        if not popup.winfo_exists():
+            return
+        
+        agreement_state = self.eula_agreement_var.get()
+        
+        # Get actual settings
+        try:
+            system_settings = self.settings_manager.settings['system_settings']
+        except KeyError:
+            print("Error: 'system_settings' key missing from settings manager.")
+            system_settings = self.settings_manager._get_default_system_settings()
+            
+        settings_changed = False
+
+        if agreement_state == 1: # "I agree"
+            if not system_settings.get("eula_agreed"):
+                system_settings["eula_agreed"] = True
+                settings_changed = True
+            
+            # Ensure legacy flag is off
+            if system_settings.get("show_eula_on_launch"):
+                system_settings["show_eula_on_launch"] = False
+                settings_changed = True
+            
+            if settings_changed:
+                self.settings_manager._save_all_settings()
+            
+            popup.destroy()
+            return
+
+        elif agreement_state == 2: # "I do not agree"
+            if system_settings.get("eula_agreed"):
+                system_settings["eula_agreed"] = False
+                settings_changed = True
+            
+            if settings_changed:
+                self.settings_manager._save_all_settings()
+            
+            popup.destroy()
+            self._show_disagree_dialog()
+            return
+            
+        else: # State is 0 (neither selected)
+            messagebox.showwarning("Agreement Required", 
+                                   "You must select 'I agree' or 'I do not agree' to proceed.", 
+                                   parent=popup)
+            return
+            
     def _add_changelog_section(self, parent_frame, popup_window):
         """Adds a scrollable changelog text area to the About popup."""
         
@@ -4001,255 +4192,17 @@ class PopupManagerMixin:
         # Now show the window at the correct location
         popup.deiconify()
 
-    def _open_support_popup(self, is_launch=False):
-        """
-        Displays the 'Support this App' popup.
-        """
-        popup = tk.Toplevel(self.root)
-        
-        # --- FIX: Hide immediately to prevent random OS placement ---
-        popup.withdraw()
-        
-        popup.title("Support This App & EULA")
-        
-        # --- 1. Load Image ---
-        self._load_support_image() 
-
-        # --- 2. Reset UI Variables ---
-        system_settings = self.settings_manager.get_system_settings()
-        
-        has_agreed = system_settings.get("eula_agreed", False)
-        if has_agreed:
-            self.eula_agreement_var.set(1) 
-        else:
-            self.eula_agreement_var.set(0) 
-        
-        show_on_launch_setting = system_settings.get("show_eula_on_launch", True)
-        self.show_eula_checkbox_var.set(not show_on_launch_setting)
-        
-        # --- 3. Build UI ---
-        main_frame = ttk.Frame(popup, padding="15")
-        main_frame.pack(fill="both", expand=True)
-
-        # --- Top Section ---
-        top_frame = ttk.Frame(main_frame)
-        top_frame.pack(fill="x", pady=(0, 15))
-        top_frame.grid_columnconfigure(0, weight=1) 
-        top_frame.grid_columnconfigure(1, weight=0) 
-
-        # Text Container
-        text_container = ttk.Frame(top_frame)
-        text_container.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
-
-        support_text = (
-            "This App took hundreds of hours to develop, test, and optimize. "
-            "Please consider supporting this App with a donation so continuous improvements "
-            "can be made. If you wish to receive customer support via email, please "
-            "make a reasonable donation in support of this App. Customer support "
-            "requests without a donation may not be considered for response."
-        )
-        
-        text_label = ttk.Label(text_container, text=support_text, wraplength=520, justify="left")
-        text_label.pack(anchor="w", fill="x")
-        
-        # Bold Donation Line
-        try:
-            default_font = tkfont.nametofont("TkDefaultFont")
-            bold_font = default_font.copy()
-            bold_font.config(weight="bold")
-        except:
-            bold_font = ('TkDefaultFont', 10, 'bold')
-
-        bold_text = "Use your phone to scan the QR code and donate to this project."
-        bold_label = ttk.Label(text_container, text=bold_text, font=bold_font, wraplength=520, justify="left")
-        bold_label.pack(anchor="w", fill="x", pady=(5, 0))
-        
-        if self.support_qr_image:
-            qr_label = ttk.Label(top_frame, image=self.support_qr_image)
-            qr_label.grid(row=0, column=1, sticky="ne")
-        else:
-            qr_placeholder = ttk.Label(top_frame, text="[QR Code Image Missing]", relief="sunken", padding=20)
-            qr_placeholder.grid(row=0, column=1, sticky="ne")
-            
-        # --- EULA Section ---
-        eula_frame = ttk.LabelFrame(main_frame, text="End User License Agreement (EULA)", padding=10)
-        eula_frame.pack(fill="both", expand=True, pady=(0, 15))
-        
-        eula_text_widget = scrolledtext.ScrolledText(eula_frame, height=6, wrap="word", relief="flat")
-        eula_text_widget.pack(fill="both", expand=True)
-        
-        try:
-            eula_text_widget.tag_configure("bold", font=bold_font)
-        except:
-            eula_text_widget.tag_configure("bold", font=('TkDefaultFont', 10, 'bold'))
-        
-        eula_text_widget.config(state="normal")
-        eula_text_widget.insert("end", "End User License Agreement (EULA)\n\n", "bold")
-        eula_text_widget.insert("end", "1. Scope of Agreement\n", "bold")
-        eula_text_widget.insert("end", (
-            "This Agreement applies to the \"Keg Level Monitor\" software (hereafter \"this app\"). "
-            "\"This app\" includes the main software program and all related software and hardware components, "
-            "including commercially supplied, home-made, or independently supplied hardware "
-            "and software components of any kind.\n\n"
-        ))
-        eula_text_widget.insert("end", "2. Acceptance of Responsibility\n", "bold")
-        eula_text_widget.insert("end", (
-            "By using this app, you, the user, accept all responsibility for any consequence or "
-            "outcome arising from the use of, or inability to use, this app.\n\n"
-        ))
-        eula_text_widget.insert("end", "3. No Guarantee or Warranty\n", "bold")
-        eula_text_widget.insert("end", (
-            "This app is provided \"as is.\" It provides no guarantee of usefulness or fitness "
-            "for any particular purpose. The app provides no warranty, expressed or implied. "
-            "You use this app entirely at your own risk.\n"
-        ))
-        eula_text_widget.config(state="disabled")
-
-        # --- Agreement Section ---
-        agreement_frame = ttk.Frame(main_frame)
-        agreement_frame.pack(fill="x")
-
-        # Radio 1: Agree
-        agree_rb = ttk.Radiobutton(agreement_frame, 
-                                   text="I agree with the above End User License Agreement", 
-                                   variable=self.eula_agreement_var, value=1)
-        agree_rb.pack(anchor="w")
-        agree_note = ttk.Label(agreement_frame, text="User may proceed to the app after closing this popup",
-                               font=('TkDefaultFont', 8, 'italic'))
-        agree_note.pack(anchor="w", padx=(20, 0), pady=(0, 5))
-
-        # Radio 2: Disagree
-        disagree_rb = ttk.Radiobutton(agreement_frame, 
-                                     text="I do not agree with the above End User License Agreement", 
-                                     variable=self.eula_agreement_var, value=2)
-        disagree_rb.pack(anchor="w")
-        disagree_note = ttk.Label(agreement_frame, text="User will exit the app after closing this popup",
-                                 font=('TkDefaultFont', 8, 'italic'))
-        disagree_note.pack(anchor="w", padx=(20, 0), pady=(0, 10))
-
-        # --- Bottom Section (Checkbox & Close) ---
-        bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.pack(fill="x", side="bottom")
-
-        show_again_cb = ttk.Checkbutton(bottom_frame, 
-                                        text="This popup can be found on the Settings & Info menu. Do not show this popup at launch again.",
-                                        variable=self.show_eula_checkbox_var)
-        show_again_cb.pack(anchor="w", pady=(0, 10))
-
-        close_btn = ttk.Button(bottom_frame, text="Close", 
-                               command=lambda: self._handle_support_popup_close(popup))
-        close_btn.pack(side="right")
-        
-        # NEW Help Button
-        ttk.Button(bottom_frame, text="Help", width=8,
-                   command=lambda: self._open_help_popup("support")).pack(side="right", padx=5)
-
-        # --- 4. Finalize Popup ---
-        popup_width = 780
-        popup_height = 520
-        
-        # Center and show (this helper now handles withdraw/deiconify for stable positioning)
-        self._center_popup(popup, popup_width, popup_height)
-        
-        popup.resizable(False, False)
-        
-        # Modal logic
-        if is_launch:
-            popup.protocol("WM_DELETE_WINDOW", lambda: self._handle_support_popup_close(popup))
-            popup.transient(self.root)
-            popup.lift()
-            popup.focus_force()
-            popup.grab_set()
-            # Wait window logic with crash protection
-            try:
-                self.root.wait_window(popup)
-            except tk.TclError:
-                pass
-        else:
-            popup.transient(self.root)
-            popup.grab_set()
-            
-    def _handle_support_popup_close(self, popup):
-        """Handles the logic for the 'Close' button on the Support/EULA popup."""
-        
-        if not popup.winfo_exists():
-            return
-        
-        agreement_state = self.eula_agreement_var.get()
-        do_not_show_checked = self.show_eula_checkbox_var.get()
-        
-        # --- THIS IS THE FIX ---
-        # Get the *actual* system_settings dictionary from the settings manager,
-        # not a copy from get_system_settings().
-        try:
-            system_settings = self.settings_manager.settings['system_settings']
-        except KeyError:
-            # Fallback in case settings are severely corrupted
-            print("Error: 'system_settings' key missing from settings manager.")
-            system_settings = self.settings_manager._get_default_system_settings()
-        # --- END FIX ---
-            
-        settings_changed = False
-
-        if agreement_state == 1: # "I agree"
-            new_show_on_launch = not do_not_show_checked
-            if system_settings.get("show_eula_on_launch") != new_show_on_launch:
-                system_settings["show_eula_on_launch"] = new_show_on_launch
-                settings_changed = True
-            
-            if not system_settings.get("eula_agreed"):
-                system_settings["eula_agreed"] = True
-                settings_changed = True
-            
-            if settings_changed:
-                self.settings_manager._save_all_settings() # Save the modified dict
-            
-            popup.destroy()
-            return
-
-        elif agreement_state == 2: # "I do not agree"
-            # Reset the "do not show" setting if they disagreed
-            if do_not_show_checked:
-                system_settings["show_eula_on_launch"] = True
-                settings_changed = True
-            
-            if system_settings.get("eula_agreed"):
-                system_settings["eula_agreed"] = False
-                settings_changed = True
-            
-            if settings_changed:
-                self.settings_manager._save_all_settings()
-            
-            popup.destroy()
-            self._show_disagree_dialog()
-            return
-            
-        else: # State is 0 (neither selected)
-            if not popup.winfo_exists():
-                return
-            messagebox.showwarning("Agreement Required", 
-                                   "You must select 'I agree' or 'I do not agree' to proceed.", 
-                                   parent=popup)
-            # Do not close the popup
-            return
 
     def _show_disagree_dialog(self):
         """Shows the final confirmation dialog when user disagrees with EULA."""
-        
         if messagebox.askokcancel("EULA Disagreement",
                                 "You chose to not agree with the End User License Agreement, so the app will terminate when you click OK.\n\n"
                                 "Click Cancel to return to the agreement or click OK to exit the app."):
-            
-            # User clicked OK (True) -> Terminate the app
             print("EULA Disagreement: User clicked OK. Terminating application.")
-            
-            # We must call the root's destroy method
             self.root.destroy()
-            
         else:
-            # User clicked Cancel (False) -> Re-open the EULA popup
-            # Force it as a 'launch' popup to ensure it's modal
-            self._open_support_popup(is_launch=True)
+            # User clicked Cancel -> Re-open the EULA popup
+            self._open_eula_popup(is_launch=True)
             
             
     def _open_uninstall_app_popup(self):
