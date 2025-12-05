@@ -477,145 +477,16 @@ class SettingsManager:
         self.beverage_library['beverages'] = new_library_list
         self._save_beverage_library(self.beverage_library)
 
-    def get_available_addon_libraries(self):
-        assets_dir = os.path.join(self.get_base_dir(), "assets")
-        available_libraries = []
-        
-        file_name_to_display_name = {
-            "bjcp_2021_library.json": "BJCP 2021 Library",
-            "bjcp_2015_library.json": "BJCP 2015 Library"
-        }
-        
-        if not os.path.exists(assets_dir):
-            return []
-        
+    def load_bjcp_styles(self):
+        """Loads the strict BJCP styles from the central JSON file."""
+        bjcp_file = os.path.join(self.get_base_dir(), "assets", "bjcp_styles.json")
         try:
-            for filename in os.listdir(assets_dir):
-                if filename.endswith('_library.json'):
-                    if filename in file_name_to_display_name:
-                         display_name = file_name_to_display_name[filename]
-                    else:
-                         display_name = filename.replace('_library.json', '').replace('_', ' ').strip()
-                         display_name = display_name.title()
-
-                    if display_name not in available_libraries:
-                         available_libraries.append(display_name)
-
-            available_libraries.sort()
-            return available_libraries
-            
+            with open(bjcp_file, 'r', encoding='utf-8') as f:
+                styles = json.load(f)
+                return styles
         except Exception as e:
-            print(f"SettingsManager Error scanning for add-on libraries: {e}")
-            return ["Error Scanning"]
-
-    def get_addon_filename_from_display_name(self, display_name):
-        assets_dir = os.path.join(self.get_base_dir(), "assets")
-        if display_name == "BJCP 2021 Library":
-            filename = "bjcp_2021_library.json"
-        elif display_name == "BJCP 2015 Library":
-            filename = "bjcp_2015_library.json"
-        else:
-             filename_base = display_name.lower().replace(' ', '_')
-             filename = f"{filename_base}_library.json"
-        return os.path.join(assets_dir, filename)
-
-    def load_addon_library(self, addon_name):
-        file_path = self.get_addon_filename_from_display_name(addon_name)
-        
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    library = json.load(f)
-                    if not isinstance(library.get('beverages'), list):
-                         print(f"Addon Library: Contents of {addon_name} corrupted. Aborting import.")
-                         return None
-                    for beverage in library.get('beverages', []):
-                        beverage['source_library'] = addon_name
-                    return library.get('beverages', [])
-            except Exception as e:
-                print(f"Addon Library: Error loading or decoding JSON for {addon_name}: {e}.")
-                return None
-        else:
-            print(f"Addon Library: {addon_name} file not found at {file_path}.")
-            return None
-
-    def import_beverages_from_addon(self, addon_name):
-        addon_list = self.load_addon_library(addon_name)
-        if addon_list is None:
-            return False, f"Could not load {addon_name} file.", 0
-
-        current_beverages = self.get_beverage_library().get('beverages', [])
-        current_ids = {b['id'] for b in current_beverages if 'id' in b}
-        new_beverages = [b for b in addon_list if b.get('id') not in current_ids]
-        
-        new_count = len(new_beverages)
-        if not new_beverages:
-            return False, f"{addon_name} is already fully imported or contains no new entries.", 0
-
-        updated_list = current_beverages + new_beverages
-        sorted_list = sorted(updated_list, key=lambda b: b.get('name', '').lower())
-        
-        self.save_beverage_library(sorted_list)
-        return True, f"Successfully imported {new_count} beverages from {addon_name}.", new_count
-
-    def delete_beverages_from_addon(self, addon_name):
-        current_beverages = self.get_beverage_library().get('beverages', [])
-        beverages_to_keep = []
-        beverages_to_delete_ids = []
-        
-        original_addon_list = self.load_addon_library(addon_name)
-        if original_addon_list is None:
-            return False, f"Could not load original {addon_name} file for integrity check.", 0, 0
-        
-        original_map = {b['id']: b for b in original_addon_list if 'id' in b}
-        total_original_count = len([b for b in current_beverages if b.get('source_library') == addon_name])
-        
-        for beverage in current_beverages:
-            is_from_addon = beverage.get('source_library') == addon_name
-            if is_from_addon:
-                is_edited = False
-                original_data = original_map.get(beverage.get('id'))
-                if original_data:
-                    fields_to_check = ['name', 'bjcp', 'abv', 'ibu', 'description']
-                    for field in fields_to_check:
-                        current_val = beverage.get(field)
-                        original_val = original_data.get(field)
-                        if current_val == "": current_val = None
-                        if original_val == "": original_val = None
-                        if field == 'ibu':
-                             current_val = int(current_val) if isinstance(current_val, str) and str(current_val).isdigit() else current_val
-                        if current_val != original_val:
-                            is_edited = True
-                            break
-                else:
-                    is_edited = True
-
-            if is_from_addon and not is_edited:
-                beverages_to_delete_ids.append(beverage.get('id'))
-            else:
-                beverages_to_keep.append(beverage)
-
-        deleted_count = len(beverages_to_delete_ids)
-
-        if deleted_count == 0 and total_original_count > 0:
-             return False, f"All {total_original_count} entries from {addon_name} were edited and have been kept.", total_original_count, deleted_count
-        
-        if total_original_count == 0:
-             return False, f"No entries from {addon_name} found in the current library.", 0, 0
-
-        if not beverages_to_keep:
-            beverages_to_keep = self._get_default_beverage_library().get('beverages', [])
-            
-        assignments = self.get_sensor_beverage_assignments()
-        first_kept_id = beverages_to_keep[0]['id'] if beverages_to_keep else None 
-        
-        for i in range(len(assignments)):
-            if assignments[i] in beverages_to_delete_ids:
-                assignments[i] = first_kept_id
-                self.save_sensor_beverage_assignment(i, first_kept_id) 
-
-        self.save_beverage_library(beverages_to_keep)
-        return True, f"Successfully deleted {deleted_count} unedited entries from {addon_name}.", total_original_count, deleted_count
+            print(f"SettingsManager Error: Could not load BJCP styles: {e}")
+            return []
 
     # --- Load/Reset Settings ---
 

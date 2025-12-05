@@ -1222,51 +1222,95 @@ class PopupManagerMixin:
         changelog_text.insert(tk.END, log_content)
         changelog_text.config(state='disabled')
         
-    def _open_beverage_library_popup(self):
-        popup = tk.Toplevel(self.root)
-        popup.title("Beverage Library"); popup.geometry("800x480"); popup.transient(self.root); popup.grab_set()
-        main_frame = ttk.Frame(popup, padding="10"); main_frame.pack(expand=True, fill="both")
-        
-        canvas = tk.Canvas(main_frame, borderwidth=0)
-        v_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scroll_frame = ttk.Frame(canvas)
-        v_scrollbar.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
-        canvas.configure(yscrollcommand=v_scrollbar.set)
-        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=800) 
+    def _populate_beverage_library_list(self, popup_window):
+        """Helper to populate or refresh the beverage list inside the scroll frame."""
+        scroll_frame = getattr(popup_window, 'scroll_frame', None)
+        if not scroll_frame: return
 
-        def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
-        scroll_frame.bind("<Configure>", on_frame_configure)
-        def on_canvas_resize(event): canvas.itemconfig(canvas_window, width=event.width)
-        canvas.bind('<Configure>', on_canvas_resize)
+        # Clear existing rows to refresh
+        for widget in scroll_frame.winfo_children():
+            widget.destroy()
 
         self.beverage_popup_vars = []
         beverage_list = self.settings_manager.get_beverage_library().get('beverages', [])
-        scroll_frame.grid_columnconfigure(0, weight=1); scroll_frame.grid_columnconfigure(1, weight=0); scroll_frame.grid_columnconfigure(2, weight=0)
+        
+        # Configure grid columns for the scroll_frame
+        scroll_frame.grid_columnconfigure(0, weight=1)
+        scroll_frame.grid_columnconfigure(1, weight=0)
+        scroll_frame.grid_columnconfigure(2, weight=0)
 
-        header_frame = ttk.Frame(scroll_frame); header_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=5, pady=5)
-        header_frame.grid_columnconfigure(0, weight=1); header_frame.grid_columnconfigure(1, weight=0); header_frame.grid_columnconfigure(2, weight=0)
+        # --- Header ---
+        header_frame = ttk.Frame(scroll_frame)
+        header_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=5, pady=5)
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, weight=0)
+        header_frame.grid_columnconfigure(2, weight=0)
+        
         ttk.Label(header_frame, text="Beverage Name", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, padx=5, sticky='w')
         ttk.Label(header_frame, text="Actions", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=1, columnspan=2, sticky='w', padx=(20, 5))
 
         BG_EVEN = '#FFFFFF'; BG_ODD = '#F5F5F5' 
 
         for i in range(len(beverage_list)):
-            beverage = beverage_list[i]; row = i + 1; bg_color = BG_ODD if i % 2 else BG_EVEN
-            row_frame = tk.Frame(scroll_frame, bg=bg_color, relief='flat', bd=0); row_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(1, 0))
-            row_frame.grid_columnconfigure(0, weight=1); row_frame.grid_columnconfigure(1, weight=0); row_frame.grid_columnconfigure(2, weight=0)
+            beverage = beverage_list[i]
+            row = i + 1
+            bg_color = BG_ODD if i % 2 else BG_EVEN
+            
+            row_frame = tk.Frame(scroll_frame, bg=bg_color, relief='flat', bd=0)
+            row_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(1, 0))
+            
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_frame.grid_columnconfigure(1, weight=0)
+            row_frame.grid_columnconfigure(2, weight=0)
             
             name_label_text = tk.StringVar(value=beverage.get('name', ''))
             ttk.Label(row_frame, textvariable=name_label_text, anchor='w', background=bg_color, padding=(5, 5)).grid(row=0, column=0, sticky='w')
             self.beverage_popup_vars.append(name_label_text)
             
             ttk.Button(row_frame, text="Edit", width=8, 
-                       command=lambda b=beverage, p=popup: self._open_beverage_edit_popup(b, p)).grid(row=0, column=1, padx=(10, 5), pady=2, sticky='e')
+                       command=lambda b=beverage, p=popup_window: self._open_beverage_edit_popup(b, p)).grid(row=0, column=1, padx=(10, 5), pady=2, sticky='e')
 
             ttk.Button(row_frame, text="Delete", width=8, style="TButton", 
                        command=lambda b_id=beverage.get('id'), b_name=beverage.get('name'), 
-                       p=popup: self._delete_beverage(b_id, b_name, p)).grid(row=0, column=2, padx=(0, 5), pady=2, sticky='e')
+                       p=popup_window: self._delete_beverage(b_id, b_name, p)).grid(row=0, column=2, padx=(0, 5), pady=2, sticky='e')
+        
+        # Force geometry update
+        scroll_frame.update_idletasks()
 
-        footer_frame = ttk.Frame(popup, padding="10"); 
+    def _open_beverage_library_popup(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Beverage Library")
+        popup.geometry("800x480")
+        popup.transient(self.root)
+        popup.grab_set()
+        
+        main_frame = ttk.Frame(popup, padding="10")
+        main_frame.pack(expand=True, fill="both")
+        
+        canvas = tk.Canvas(main_frame, borderwidth=0)
+        v_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+        
+        v_scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=v_scrollbar.set)
+        
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=800) 
+
+        def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
+        scroll_frame.bind("<Configure>", on_frame_configure)
+        
+        def on_canvas_resize(event): canvas.itemconfig(canvas_window, width=event.width)
+        canvas.bind('<Configure>', on_canvas_resize)
+
+        # Attach scroll_frame to popup so helpers can refresh it
+        popup.scroll_frame = scroll_frame
+
+        # Populate the list
+        self._populate_beverage_library_list(popup)
+
+        # Footer (Outside scroll area)
+        footer_frame = ttk.Frame(popup, padding="10")
         footer_frame.pack(fill="x", side="bottom", pady=(10, 0))
         
         ttk.Button(footer_frame, text="Add New Beverage", 
@@ -1275,29 +1319,10 @@ class PopupManagerMixin:
         ttk.Button(footer_frame, text="Close", 
                    command=lambda p=popup: self._close_and_sort_beverage_library_popup(p)).pack(side="right", padx=5)
 
-        # NEW Help Button
         ttk.Button(footer_frame, text="Help", width=8,
                    command=lambda: self._open_help_popup("beverage_library")).pack(side="right", padx=5)
-
-        center_import_frame = ttk.Frame(footer_frame)
-        center_import_frame.pack(expand=True, fill="x", padx=10) 
-
-        available_libraries = self.settings_manager.get_available_addon_libraries()
-        library_options = ["Select Library"] + available_libraries
         
-        self.bjcp_import_var = tk.StringVar(value=library_options[0]) 
-        
-        import_dropdown = ttk.Combobox(center_import_frame, textvariable=self.bjcp_import_var, 
-                                       values=library_options, state="readonly", width=20)
-        import_dropdown.pack(side="left", padx=(0, 5), anchor="center")
-        
-        ttk.Button(center_import_frame, text="Import", width=8, 
-                   command=lambda p=popup: self._validate_and_open_dialog('import', p, self.bjcp_import_var.get())).pack(side="left", padx=(0, 10), anchor="center")
-
-        ttk.Button(center_import_frame, text="Delete", width=8, 
-                   command=lambda p=popup: self._validate_and_open_dialog('delete', p, self.bjcp_import_var.get())).pack(side="left", padx=(0, 5), anchor="center")
-        
-        scroll_frame.update_idletasks()
+        popup.update_idletasks()
         
     def _close_and_sort_beverage_library_popup(self, popup_window):
         beverage_library = self.settings_manager.get_beverage_library()
@@ -1323,24 +1348,59 @@ class PopupManagerMixin:
     def _open_beverage_edit_popup(self, beverage_data=None, parent_popup=None):
         is_new = beverage_data is None; popup = tk.Toplevel(self.root)
         beverage_name = beverage_data.get('name', 'Beverage') if beverage_data else 'Beverage'
-        popup.title("Add New Beverage" if is_new else f"Edit {beverage_name}"); popup.geometry("600x450")
+        popup.title("Add New Beverage" if is_new else f"Edit {beverage_name}"); popup.geometry("600x480")
         popup.transient(self.root); popup.grab_set()
 
         form_frame = ttk.Frame(popup, padding="15"); form_frame.pack(expand=True, fill="both")
         
-        # NEW: Default includes srm
         default_data = {
             'id': str(uuid.uuid4()), 'name': '', 'bjcp': '', 'abv': '', 'ibu': None, 'srm': None, 'description': ''
         }
         data = beverage_data if beverage_data else default_data
 
+        # --- LOAD STRICT BJCP STYLES WITH HEADERS ---
+        raw_styles = self.settings_manager.load_bjcp_styles()
+        
+        # Build the list for the dropdown
+        # Visual: "=== 2021 Beer Styles ===" (Header)
+        # Item: "1A American Light Lager" (Value)
+        
+        style_display_list = []
+        style_map = {} # Map "Code Name" -> Style Dict
+        
+        current_guide = None
+        
+        for s in raw_styles:
+            guide = s.get('guide', 'Unknown Guide')
+            
+            # Insert Header if guide changes
+            if guide != current_guide:
+                style_display_list.append(f"=== {guide} Styles ===")
+                current_guide = guide
+            
+            code = s.get('code', '')
+            name = s.get('name', '')
+            
+            # Standard Clean Format: "1A American Light Lager"
+            display_str = f"{code} {name}"
+            
+            style_display_list.append(display_str)
+            style_map[display_str] = s
+
+        # --- STRICT MODE CHECK ---
+        current_bjcp = data.get('bjcp', '').strip()
+        
+        # Strict Check: If the current string is NOT in our valid map, clear it.
+        # This handles migration from old free-text styles.
+        if current_bjcp and current_bjcp not in style_map:
+            current_bjcp = "" # Strict Clear
+            
         temp_vars = {
             'id': tk.StringVar(value=data.get('id')),
             'name': tk.StringVar(value=data.get('name')),
-            'bjcp': tk.StringVar(value=data.get('bjcp')), 
+            'bjcp': tk.StringVar(value=current_bjcp), 
             'abv': tk.StringVar(value=data.get('abv')),
             'ibu': tk.StringVar(value=str(data.get('ibu', '')) if data.get('ibu') is not None else ''),
-            # NEW: SRM Variable
             'srm': tk.StringVar(value=str(data.get('srm', '')) if data.get('srm') is not None else ''),
             'description': tk.StringVar(value=data.get('description'))
         }
@@ -1363,12 +1423,18 @@ class PopupManagerMixin:
 
         form_frame.grid_columnconfigure(0, weight=0); form_frame.grid_columnconfigure(1, weight=1); form_frame.grid_columnconfigure(2, weight=0)
         
-        # --- NEW: Capture the Name Entry widget ---
+        # 1. Beverage Name
         name_entry = add_field(form_frame, "Beverage Name:", temp_vars['name'], 25, row=row_idx.get(), max_len=35); row_idx.set(row_idx.get() + 1)
         
-        add_field(form_frame, "BJCP/Style Name:", temp_vars['bjcp'], 25, row=row_idx.get()); row_idx.set(row_idx.get() + 1)
+        # 2. BJCP Style (Strict Dropdown)
+        ttk.Label(form_frame, text="BJCP Style:", width=15, anchor="w").grid(row=row_idx.get(), column=0, padx=5, pady=5, sticky='w')
         
-        # Compact Row for ABV / IBU / SRM
+        style_combo = ttk.Combobox(form_frame, textvariable=temp_vars['bjcp'], values=style_display_list, state="readonly", width=40)
+        style_combo.grid(row=row_idx.get(), column=1, sticky='ew', padx=5, pady=5)
+        
+        row_idx.set(row_idx.get() + 1)
+        
+        # 3. Compact Row for ABV / IBU / SRM
         stats_frame = ttk.Frame(form_frame)
         stats_frame.grid(row=row_idx.get(), column=0, columnspan=3, sticky='w')
         
@@ -1378,16 +1444,37 @@ class PopupManagerMixin:
         ttk.Label(stats_frame, text="IBU:").pack(side='left', padx=(15, 5))
         ttk.Entry(stats_frame, textvariable=temp_vars['ibu'], width=6).pack(side='left')
         
-        # NEW: SRM Field
         ttk.Label(stats_frame, text="SRM:").pack(side='left', padx=(15, 5))
         ttk.Entry(stats_frame, textvariable=temp_vars['srm'], width=6).pack(side='left')
         ttk.Label(stats_frame, text="(Color 0-40)").pack(side='left', padx=(5, 0))
         
         row_idx.set(row_idx.get() + 1)
         
+        # 4. Description
         description_row = row_idx.get()
         description_text_widget = add_field(form_frame, "Description:", temp_vars['description'], 40, is_text=True, max_len=255, row=description_row)
         form_frame.grid_rowconfigure(description_row, weight=1); row_idx.set(row_idx.get() + 1)
+
+        # --- AUTO-FILL & HEADER LOGIC ---
+        def on_style_selected(event):
+            selected = temp_vars['bjcp'].get()
+            
+            # Check if user clicked a Header
+            if selected not in style_map:
+                # Revert or Clear. Clearing is safest for strict mode.
+                style_combo.set('') 
+                return
+
+            # Valid selection: Auto-fill description if empty
+            style_data = style_map[selected]
+            impression = style_data.get('impression', '')
+            
+            current_desc = description_text_widget.get("1.0", tk.END).strip()
+            if not current_desc and impression != "PLACEHOLDER":
+                description_text_widget.delete("1.0", tk.END)
+                description_text_widget.insert("1.0", impression)
+        
+        style_combo.bind("<<ComboboxSelected>>", on_style_selected)
 
         # Footer Buttons
         btns_frame = ttk.Frame(popup, padding="10"); btns_frame.pack(fill="x", side="bottom")
@@ -1395,15 +1482,12 @@ class PopupManagerMixin:
         ttk.Button(btns_frame, text="Save", command=lambda p=popup: self._save_beverage(temp_vars, description_text_widget, is_new, p, parent_popup)).pack(side="right", padx=5)
         ttk.Button(btns_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
         
-        # NEW Help Button
+        # Help Button
         ttk.Button(btns_frame, text="Help", width=8, 
                    command=lambda: self._open_help_popup("beverage_library")).pack(side="right", padx=5)
 
         popup.update_idletasks()
-        
-        # --- NEW: Set focus to Name field ---
-        if name_entry:
-            name_entry.focus_set()
+        if name_entry: name_entry.focus_set()
 
     def _save_beverage(self, temp_vars, description_text_widget, is_new, popup_window, parent_popup):
         try:
@@ -1427,14 +1511,12 @@ class PopupManagerMixin:
                 except ValueError:
                     messagebox.showerror("Input Error", "IBU must be blank or a whole number.", parent=popup_window); return
 
-            # VALIDATE SRM (FIXED: Int only, 0-40)
             srm = None
             if srm_str:
                 try:
-                    srm = int(srm_str) # Changed from float to int
+                    srm = int(srm_str) 
                     if not (0 <= srm <= 40): raise ValueError
                 except ValueError:
-                    # Updated error message to reflect the correct range
                     messagebox.showerror("Input Error", "SRM must be blank or a whole number between 0 and 40.", parent=popup_window); return
             
             new_data = {
@@ -1448,6 +1530,7 @@ class PopupManagerMixin:
                 found = False
                 for i, b in enumerate(beverage_list):
                     if b.get('id') == new_data['id']: 
+                        # Preserve legacy fields if needed
                         if b.get('source_library'):
                             new_data['source_library'] = b['source_library']
                         beverage_list[i] = new_data; 
@@ -1462,17 +1545,19 @@ class PopupManagerMixin:
             self._refresh_beverage_metadata()
             
             if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists(): self.workflow_app._refresh_all_columns()
-                 
+            
+            # Close the Edit Popup
             popup_window.destroy()
+            
+            # REFRESH parent in-place instead of destroying/re-opening
             if parent_popup and parent_popup.winfo_exists():
-                 parent_popup.destroy() 
-                 self._open_beverage_library_popup()
+                 self._populate_beverage_library_list(parent_popup)
             
             print(f"UIManager: Beverage '{name}' saved and sorted successfully.")
 
         except Exception as e:
             messagebox.showerror("Error", f"An unexpected error occurred while saving the beverage: {e}", parent=popup_window)
-            
+
     def _delete_beverage(self, beverage_id, beverage_name, parent_popup):
         if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the beverage '{beverage_name}'? This cannot be undone.", parent=parent_popup): return
             
@@ -1499,108 +1584,13 @@ class PopupManagerMixin:
         self._refresh_beverage_metadata()
 
         if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists(): self.workflow_app._refresh_all_columns()
-             
-        parent_popup.destroy() 
-        if self.settings_manager.get_beverage_library().get('beverages'): self._open_beverage_library_popup()
-        else: messagebox.showinfo("Library Empty", "The Beverage Library is now empty.", parent=self.root)
+        
+        # REFRESH parent in-place instead of destroying/re-opening
+        if parent_popup and parent_popup.winfo_exists():
+             self._populate_beverage_library_list(parent_popup)
+             if not new_list:
+                 messagebox.showinfo("Library Empty", "The Beverage Library is now empty.", parent=self.root)
 
-    
-    # --- NEW: Import Dialog Logic (Unchanged) ---
-    def _open_bjcp_import_dialog(self, parent_popup, addon_name):
-        addon_list = self.settings_manager.load_addon_library(addon_name)
-        if addon_list is None:
-            messagebox.showerror("Import Error", f"Could not load the {addon_name} file for pre-check.", parent=parent_popup)
-            return
-
-        current_beverages = self.settings_manager.get_beverage_library().get('beverages', [])
-        current_ids = {b['id'] for b in current_beverages if 'id' in b}
-        entries_to_import = [b for b in addon_list if b.get('id') not in current_ids]
-        import_count = len(entries_to_import)
-
-        popup = tk.Toplevel(self.root); popup.title(f"Confirm Import: {addon_name}"); popup.geometry("450x200"); popup.transient(self.root); popup.grab_set()
-        
-        frame = ttk.Frame(popup, padding="15"); frame.pack(expand=True, fill="both")
-        
-        message_text = (
-            "The library contains {import_count} entries. Once imported, the library entries can be "
-            "individually edited or deleted. The library entries may be deleted all at once "
-            "with the Delete function, but any library entries that have been edited will not "
-            "be deleted."
-        ).format(import_count=import_count) 
-        ttk.Label(frame, text=message_text, wraplength=400, justify=tk.LEFT).pack(pady=(0, 20))
-        
-        buttons_frame = ttk.Frame(popup, padding="10"); buttons_frame.pack(fill="x", side="bottom")
-        
-        ttk.Button(buttons_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
-        ttk.Button(buttons_frame, text="Continue", 
-                   command=lambda: self._execute_bjcp_import(addon_name, popup, parent_popup)).pack(side="right")
-
-    def _execute_bjcp_import(self, addon_name, dialog_popup, library_popup):
-        success, message, new_count = self.settings_manager.import_beverages_from_addon(addon_name)
-        
-        dialog_popup.destroy()
-        library_popup.destroy()
-
-        if success:
-            messagebox.showinfo("Import Successful", f"{message}", parent=self.root)
-            self._open_beverage_library_popup()
-            self._populate_beverage_dropdowns()
-            self._refresh_beverage_metadata()
-            if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists():
-                 self.workflow_app._refresh_all_columns()
-        else:
-            messagebox.showerror("Import Failed", message, parent=self.root)
-
-    # --- NEW: Delete Dialog Logic (Unchanged) ---
-    def _open_bjcp_delete_dialog(self, parent_popup, addon_name):
-        popup = tk.Toplevel(self.root); popup.title(f"Confirm Delete: {addon_name}"); popup.geometry("450x200"); popup.transient(self.root); popup.grab_set()
-        
-        frame = ttk.Frame(popup, padding="15"); frame.pack(expand=True, fill="both")
-        
-        message_text = (
-            "This action attempts to remove all original entries from the imported library. Any "
-            "imported library entries that have been edited will not be deleted. Any taps assigned "
-            "to these entries will be reassigned to the first beverage in the list of beverages."
-        )
-        ttk.Label(frame, text=message_text, wraplength=400, justify=tk.LEFT).pack(pady=(0, 20))
-        
-        buttons_frame = ttk.Frame(popup, padding="10"); buttons_frame.pack(fill="x", side="bottom")
-        
-        ttk.Button(buttons_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
-        ttk.Button(buttons_frame, text="Continue", 
-                   command=lambda: self._execute_bjcp_delete(addon_name, popup, parent_popup)).pack(side="right")
-
-    def _execute_bjcp_delete(self, addon_name, dialog_popup, library_popup):
-        success, message, total_original_count, deleted_count = self.settings_manager.delete_beverages_from_addon(addon_name)
-        
-        dialog_popup.destroy()
-        library_popup.destroy()
-        
-        if success:
-            messagebox.showinfo("Delete Successful", 
-                                f"Successfully deleted {deleted_count} of {total_original_count} original entries from {addon_name}. Taps were reassigned.", 
-                                parent=self.root)
-            self._open_beverage_library_popup()
-            self._populate_beverage_dropdowns()
-            self._refresh_beverage_metadata()
-            if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists():
-                 self.workflow_app._refresh_all_columns()
-        else:
-            messagebox.showerror("Import Failed", message, parent=self.root)
-
-    def _validate_and_open_dialog(self, action, parent_popup, selected_library_name):
-        """Checks if a valid library is selected before opening the import/delete dialog."""
-        if selected_library_name == "Select Library" or not selected_library_name:
-            messagebox.showerror("Selection Error", "Please select a valid library to proceed.", parent=parent_popup)
-            return
-
-        if action == 'import':
-            self._open_bjcp_import_dialog(parent_popup, selected_library_name)
-        elif action == 'delete':
-            self._open_bjcp_delete_dialog(parent_popup, selected_library_name)
-
-    # --- Keg Settings Helper Methods (REPLACED/MODIFIED) ---
-    
     # --- FIX: Added 'row' parameter to the internal helper function signature ---
     def _add_link_field(self, parent, label_text, var, unit, row, readonly=False):
         """Helper to create and place linked fields for the edit popup."""
@@ -3886,12 +3876,15 @@ class PopupManagerMixin:
             messagebox.showerror("Error", f"An unexpected error occurred while opening wiring diagram:\n{e}", parent=self.root)
 
     def _open_wiring_pdf(self, source_path, parent_popup):
-        """Helper to open the PDF in the system default viewer (xdg-open)."""
+        """Helper to open the PDF in the system default viewer (Cross-platform)."""
         try:
-            # Use xdg-open to launch the default application for PDF
-            subprocess.Popen(['xdg-open', source_path], 
-                             stderr=subprocess.DEVNULL, 
-                             stdout=subprocess.DEVNULL)
+            if sys.platform == 'win32':
+                os.startfile(source_path)
+            else:
+                # Use xdg-open to launch the default application for PDF on Linux
+                subprocess.Popen(['xdg-open', source_path], 
+                                 stderr=subprocess.DEVNULL, 
+                                 stdout=subprocess.DEVNULL)
         except Exception as e:
             messagebox.showerror("Open Error", f"Could not launch PDF viewer:\n{e}", parent=parent_popup)
     
@@ -3918,10 +3911,13 @@ class PopupManagerMixin:
             
             if os.path.exists(pdf_path):
                 try:
-                    # Use xdg-open to launch the default application for PDF (Evince/qpdfview)
-                    subprocess.Popen(['xdg-open', pdf_path], 
-                                     stderr=subprocess.DEVNULL, 
-                                     stdout=subprocess.DEVNULL)
+                    if sys.platform == 'win32':
+                        os.startfile(pdf_path)
+                    else:
+                        # Use xdg-open to launch the default application for PDF (Evince/qpdfview)
+                        subprocess.Popen(['xdg-open', pdf_path], 
+                                         stderr=subprocess.DEVNULL, 
+                                         stdout=subprocess.DEVNULL)
                 except Exception as e:
                     # Try to find a parent window for the error, fallback to root
                     parent = self.root.focus_get().winfo_toplevel() if self.root.focus_get() else self.root
@@ -3935,6 +3931,7 @@ class PopupManagerMixin:
                 webbrowser.open_new(url)
             except Exception as e:
                 print(f"Error opening link: {e}")
+                
     def _get_help_section(self, section_name):
         """
         Loads the consolidated help.md file and extracts a specific section.

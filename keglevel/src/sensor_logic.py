@@ -29,18 +29,41 @@ GPIO 26 ---------- 37    38  ------------ GPIO 20 (PCM_DIN)
 Ground ----------- 39    40  ------------ GPIO 21 (PCM_DOUT)
 '''
 
-# --- REFACTOR: REMOVE MOCK LOGIC AND IMPORT RPi.GPIO DIRECTLY ---
+# --- REFACTOR: SAFE IMPORT FOR CROSS-PLATFORM COMPATIBILITY ---
 
-# Direct import for Raspberry Pi hardware
-import RPi.GPIO as GPIO
+try:
+    # Direct import for Raspberry Pi hardware
+    import RPi.GPIO as GPIO
 
-# FIX: Check if RPi.GPIO or lgpio is used by reading the startup print statement
-if GPIO.getmode() != GPIO.BCM: # Check if mode is set by a previous run or a fresh start
-    GPIO.setmode(GPIO.BCM)
-print("Running on RPi hardware (RPi.GPIO mode).")
+    # FIX: Check if RPi.GPIO or lgpio is used by reading the startup print statement
+    if GPIO.getmode() != GPIO.BCM: # Check if mode is set by a previous run or a fresh start
+        GPIO.setmode(GPIO.BCM)
+    print("Running on RPi hardware (RPi.GPIO mode).")
+    IS_RASPBERRY_PI_MODE = True
 
-# --- Define the RPi mode flag here for early module imports ---
-IS_RASPBERRY_PI_MODE = True
+except (ImportError, RuntimeError):
+    print("WARNING: RPi.GPIO not found. Running in simulation/mock mode (Windows/Non-Pi).")
+    IS_RASPBERRY_PI_MODE = False
+    
+    # Mock GPIO class prevents crashes when code tries to access GPIO.BCM etc.
+    class MockGPIO:
+        BCM = "BCM"
+        IN = "IN"
+        PUD_DOWN = "PUD_DOWN"
+        RISING = "RISING"
+        
+        @staticmethod
+        def setmode(mode): pass
+        @staticmethod
+        def setup(pin, mode, pull_up_down=None): pass
+        @staticmethod
+        def add_event_detect(pin, edge, callback, bouncetime=None): pass
+        @staticmethod
+        def remove_event_detect(pin): pass
+        @staticmethod
+        def cleanup(): pass
+    
+    GPIO = MockGPIO
 
 # --- NEW: Helper function expected by main.py ---
 def is_raspberry_pi():

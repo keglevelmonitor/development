@@ -85,15 +85,19 @@ def handle_exit_signal(signum, frame):
         pass 
 
     try:
-        signal_name = "SIGHUP" if signum == signal.SIGHUP else "SIGTERM"
+        # Check if SIGHUP exists (Linux/Unix only)
+        is_sighup = hasattr(signal, 'SIGHUP') and signum == signal.SIGHUP
+        signal_name = "SIGHUP" if is_sighup else "SIGTERM"
         print(f"\n[SHUTDOWN] Received {signal_name}. Hardware cleanup complete.")
     except (IOError, OSError):
         pass 
 
     os._exit(0)
 
-# Register the signals
-signal.signal(signal.SIGHUP, handle_exit_signal)
+# Register the signals safely
+if hasattr(signal, 'SIGHUP'):
+    signal.signal(signal.SIGHUP, handle_exit_signal)
+    
 signal.signal(signal.SIGTERM, handle_exit_signal)
 
 # --- GLOBAL VARIABLES FOR SIGNAL HANDLER ACCESS ---
