@@ -14,6 +14,8 @@ import subprocess
 import sys      
 import re
 import threading
+import webbrowser
+from main import manage_autostart_file
 
 
 # FIX: Import UNASSIGNED_KEG_ID and UNASSIGNED_BEVERAGE_ID
@@ -23,15 +25,6 @@ except ImportError:
     UNASSIGNED_KEG_ID = "unassigned_keg_id"
     UNASSIGNED_BEVERAGE_ID = "unassigned_beverage_id"
     
-# --- NEW: EULA/Support Imports ---
-import tkinter.scrolledtext as scrolledtext
-import webbrowser
-# --- END NEW ---
-
-# --- NEW: Import manage_autostart_file from main.py ---
-from main import manage_autostart_file
-# --- END NEW IMPORT ---
-
 # --- NEW: Import ProcessFlowApp for in-process hosting ---
 # Removing mock for ProcessFlowApp is not feasible here as it needs to run 
 # in the environment if the import fails, so the conditional import is necessary.
@@ -895,8 +888,12 @@ class PopupManagerMixin:
         # --- 1. Configuration ---
         self.settings_menu.add_command(label="Configuration", font=self.menu_heading_font, state="disabled")
         
-        self.settings_menu.add_command(label="Keg Settings", command=self._open_keg_settings_popup)
-        self.settings_menu.add_command(label="Beverage Library", command=self._open_beverage_library_popup)
+        # RENAMED: Keg Settings -> Keg Management
+        self.settings_menu.add_command(label="Keg Management", command=lambda: self._open_configuration_popup(initial_tab=0))
+        
+        # RENAMED: Beverage Library -> Beverage Management
+        self.settings_menu.add_command(label="Beverage Management", command=lambda: self._open_configuration_popup(initial_tab=1))
+        
         self.settings_menu.add_command(label="Notification Settings", command=self._open_message_settings_popup)
         self.settings_menu.add_command(label="Flow Sensor Calibration", command=self._open_flow_calibration_popup)
         self.settings_menu.add_command(label="System Settings", command=self._open_system_settings_popup)
@@ -924,10 +921,55 @@ class PopupManagerMixin:
         
         self.settings_menu.add_command(label="Help", command=self._open_help_popup)
         
-        # RENAMED: Support this App -> EULA
         self.settings_menu.add_command(label="EULA", command=lambda: self._open_eula_popup(is_launch=False))
         self.settings_menu.add_command(label="About...", command=self._open_about_popup)
 
+    def _open_configuration_popup(self, initial_tab=0):
+        """
+        Opens the Unified Configuration Window (Kegs & Beverages).
+        """
+        popup = tk.Toplevel(self.root)
+        popup.title("Configuration Manager")
+        
+        # Set size to 700x540 as requested (Narrower)
+        self._center_popup(popup, 700, 540)
+        
+        popup.transient(self.root)
+        popup.grab_set()
+        
+        # Create Notebook (Tabs)
+        notebook = ttk.Notebook(popup)
+        notebook.pack(expand=True, fill="both", padx=5, pady=5)
+        
+        # Tab 1: Keg Management
+        self.tab_kegs = ttk.Frame(notebook)
+        notebook.add(self.tab_kegs, text="Keg Management")
+        
+        # Tab 2: Beverage Management
+        self.tab_beverages = ttk.Frame(notebook)
+        notebook.add(self.tab_beverages, text="Beverage Management")
+        
+        # Initialize Lists
+        self._show_keg_list_view(self.tab_kegs, popup) # Pass popup for Close button
+        self._show_beverage_list_view(self.tab_beverages, popup) # Pass popup for Close button
+        
+        # Select requested tab
+        if initial_tab == 1:
+            notebook.select(self.tab_beverages)
+            
+        # Bind Tab Change to handle refreshes
+        def on_tab_change(event):
+            selected_tab = event.widget.select()
+            tab_text = event.widget.tab(selected_tab, "text")
+            
+            if tab_text == "Keg Management":
+                for widget in self.tab_kegs.winfo_children():
+                    if hasattr(widget, 'beverage_combobox'):
+                        self._populate_keg_edit_dropdown(widget.beverage_combobox)
+                        break
+
+        notebook.bind("<<NotebookTabChanged>>", on_tab_change)
+        
     def _open_about_popup(self):
         try:
             APP_REVISION = self.__class__.__bases__[0].APP_REVISION
@@ -1222,375 +1264,233 @@ class PopupManagerMixin:
         changelog_text.insert(tk.END, log_content)
         changelog_text.config(state='disabled')
         
-    def _populate_beverage_library_list(self, popup_window):
-        """Helper to populate or refresh the beverage list inside the scroll frame."""
-        scroll_frame = getattr(popup_window, 'scroll_frame', None)
-        if not scroll_frame: return
-
-        # Clear existing rows to refresh
-        for widget in scroll_frame.winfo_children():
-            widget.destroy()
-
-        self.beverage_popup_vars = []
-        beverage_list = self.settings_manager.get_beverage_library().get('beverages', [])
+    def _show_beverage_list_view(self, parent_frame, popup_window=None):
+        """Renders the Beverage List View into the provided frame."""
+        for widget in parent_frame.winfo_children(): widget.destroy()
         
-        # Configure grid columns for the scroll_frame
-        scroll_frame.grid_columnconfigure(0, weight=1)
-        scroll_frame.grid_columnconfigure(1, weight=0)
-        scroll_frame.grid_columnconfigure(2, weight=0)
-
-        # --- Header ---
-        header_frame = ttk.Frame(scroll_frame)
-        header_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=5, pady=5)
-        header_frame.grid_columnconfigure(0, weight=1)
-        header_frame.grid_columnconfigure(1, weight=0)
-        header_frame.grid_columnconfigure(2, weight=0)
+        # --- Scrollable Area (Top, Expanded) ---
+        list_container = ttk.Frame(parent_frame)
+        list_container.pack(fill="both", expand=True, padx=5, pady=5)
         
-        ttk.Label(header_frame, text="Beverage Name", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, padx=5, sticky='w')
-        ttk.Label(header_frame, text="Actions", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=1, columnspan=2, sticky='w', padx=(20, 5))
-
-        BG_EVEN = '#FFFFFF'; BG_ODD = '#F5F5F5' 
-
-        for i in range(len(beverage_list)):
-            beverage = beverage_list[i]
-            row = i + 1
-            bg_color = BG_ODD if i % 2 else BG_EVEN
-            
-            row_frame = tk.Frame(scroll_frame, bg=bg_color, relief='flat', bd=0)
-            row_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(1, 0))
-            
-            row_frame.grid_columnconfigure(0, weight=1)
-            row_frame.grid_columnconfigure(1, weight=0)
-            row_frame.grid_columnconfigure(2, weight=0)
-            
-            name_label_text = tk.StringVar(value=beverage.get('name', ''))
-            ttk.Label(row_frame, textvariable=name_label_text, anchor='w', background=bg_color, padding=(5, 5)).grid(row=0, column=0, sticky='w')
-            self.beverage_popup_vars.append(name_label_text)
-            
-            ttk.Button(row_frame, text="Edit", width=8, 
-                       command=lambda b=beverage, p=popup_window: self._open_beverage_edit_popup(b, p)).grid(row=0, column=1, padx=(10, 5), pady=2, sticky='e')
-
-            ttk.Button(row_frame, text="Delete", width=8, style="TButton", 
-                       command=lambda b_id=beverage.get('id'), b_name=beverage.get('name'), 
-                       p=popup_window: self._delete_beverage(b_id, b_name, p)).grid(row=0, column=2, padx=(0, 5), pady=2, sticky='e')
-        
-        # Force geometry update
-        scroll_frame.update_idletasks()
-
-    def _open_beverage_library_popup(self):
-        popup = tk.Toplevel(self.root)
-        popup.title("Beverage Library")
-        popup.geometry("800x480")
-        popup.transient(self.root)
-        popup.grab_set()
-        
-        main_frame = ttk.Frame(popup, padding="10")
-        main_frame.pack(expand=True, fill="both")
-        
-        canvas = tk.Canvas(main_frame, borderwidth=0)
-        v_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(list_container, borderwidth=0, highlightthickness=0)
+        v_bar = ttk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
         scroll_frame = ttk.Frame(canvas)
         
-        v_scrollbar.pack(side="right", fill="y")
+        v_bar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        canvas.configure(yscrollcommand=v_scrollbar.set)
+        canvas.configure(yscrollcommand=v_bar.set)
         
-        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=800) 
-
-        def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
-        scroll_frame.bind("<Configure>", on_frame_configure)
+        cw = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         
-        def on_canvas_resize(event): canvas.itemconfig(canvas_window, width=event.width)
-        canvas.bind('<Configure>', on_canvas_resize)
+        # --- FIX: Changed event.width to e.width ---
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(cw, width=e.width))
 
-        # Attach scroll_frame to popup so helpers can refresh it
-        popup.scroll_frame = scroll_frame
-
-        # Populate the list
-        self._populate_beverage_library_list(popup)
-
-        # Footer (Outside scroll area)
-        footer_frame = ttk.Frame(popup, padding="10")
-        footer_frame.pack(fill="x", side="bottom", pady=(10, 0))
+        # Rows
+        bevs = sorted(self.settings_manager.get_beverage_library().get('beverages', []), key=lambda b: b.get('name', '').lower())
         
-        ttk.Button(footer_frame, text="Add New Beverage", 
-                   command=lambda p=popup: self._open_beverage_edit_popup(None, p)).pack(side="left", padx=5)
+        # Header
+        header = ttk.Frame(scroll_frame)
+        header.pack(fill="x", pady=0)
+        header.grid_columnconfigure(0, weight=3) 
+        header.grid_columnconfigure(1, weight=0, minsize=150) # Actions
+        
+        # Increased padx to 10 for "Beverage Name"
+        ttk.Label(header, text="Beverage Name", font=('TkDefaultFont', 10, 'bold'), anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ttk.Label(header, text="Actions", font=('TkDefaultFont', 10, 'bold'), anchor="e").grid(row=0, column=1, sticky="ew", padx=15, pady=5)
+        
+        ttk.Separator(scroll_frame, orient="horizontal").pack(fill="x", pady=0)
+        
+        for i, bev in enumerate(bevs):
+            row_frame = ttk.Frame(scroll_frame)
+            row_frame.pack(fill="x", pady=0)
+            
+            row_frame.grid_columnconfigure(0, weight=3)
+            row_frame.grid_columnconfigure(1, weight=0, minsize=150)
+            
+            bg = "#FFFFFF" if i % 2 == 0 else "#F5F5F5"
+            
+            # Increased padx to 10
+            tk.Label(row_frame, text=bev.get('name', ''), anchor="w", bg=bg).grid(row=0, column=0, sticky="nsew", padx=(10,0), pady=0, ipady=5)
+            
+            btns = tk.Frame(row_frame, bg=bg)
+            btns.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+            
+            ttk.Button(btns, text="Delete", width=8,
+                       command=lambda b=bev: self._delete_beverage_from_view(parent_frame, b)).pack(side="right", padx=5, pady=2)
+            
+            ttk.Button(btns, text="Edit", width=8, 
+                       command=lambda b=bev: self._show_beverage_edit_view(parent_frame, b)).pack(side="right", padx=2, pady=2)
 
-        ttk.Button(footer_frame, text="Close", 
-                   command=lambda p=popup: self._close_and_sort_beverage_library_popup(p)).pack(side="right", padx=5)
+        # --- Footer Area (Bottom) ---
+        footer_frame = ttk.Frame(parent_frame, padding=10)
+        footer_frame.pack(fill="x", side="bottom")
+        
+        ttk.Button(footer_frame, text="+ Add New Beverage", 
+                   command=lambda: self._show_beverage_edit_view(parent_frame, None)).pack(side="left", padx=5)
+        
+        if popup_window:
+            ttk.Button(footer_frame, text="Close", command=popup_window.destroy).pack(side="right", padx=5)
 
         ttk.Button(footer_frame, text="Help", width=8,
                    command=lambda: self._open_help_popup("beverage_library")).pack(side="right", padx=5)
-        
-        popup.update_idletasks()
-        
-    def _close_and_sort_beverage_library_popup(self, popup_window):
-        beverage_library = self.settings_manager.get_beverage_library()
-        beverage_list = beverage_library.get('beverages', [])
-        
-        try:
-            sorted_list = sorted(beverage_list, key=lambda b: b.get('name', '').lower())
-        except Exception as e:
-            messagebox.showerror("Sort Error", f"An error occurred during automatic sorting of the library. {e}", parent=popup_window)
-            popup_window.destroy(); return
 
-        self.settings_manager.save_beverage_library(sorted_list)
-        print("UIManager: Beverage library automatically sorted and saved upon close.")
+    def _show_beverage_edit_view(self, parent_frame, bev_data):
+        """Renders the Beverage Edit Form (Drill-Down)."""
+        for widget in parent_frame.winfo_children(): widget.destroy()
         
-        self._populate_beverage_dropdowns()
-        self._refresh_beverage_metadata()
+        is_new = bev_data is None
+        title = "Add New Beverage" if is_new else "Edit Beverage"
         
-        if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists():
-             self.workflow_app._refresh_all_columns()
-
-        popup_window.destroy()
-
-    def _open_beverage_edit_popup(self, beverage_data=None, parent_popup=None):
-        is_new = beverage_data is None; popup = tk.Toplevel(self.root)
-        beverage_name = beverage_data.get('name', 'Beverage') if beverage_data else 'Beverage'
-        popup.title("Add New Beverage" if is_new else f"Edit {beverage_name}"); popup.geometry("600x480")
-        popup.transient(self.root); popup.grab_set()
-
-        form_frame = ttk.Frame(popup, padding="15"); form_frame.pack(expand=True, fill="both")
+        # Header - Updated for Left Justification consistency
+        header_frame = ttk.Frame(parent_frame, padding=10)
+        header_frame.pack(fill="x", side="top")
+        ttk.Label(header_frame, text=title, font=('TkDefaultFont', 14, 'bold')).pack(side="left")
         
-        default_data = {
-            'id': str(uuid.uuid4()), 'name': '', 'bjcp': '', 'abv': '', 'ibu': None, 'srm': None, 'description': ''
-        }
-        data = beverage_data if beverage_data else default_data
-
-        # --- LOAD STRICT BJCP STYLES WITH HEADERS ---
-        raw_styles = self.settings_manager.load_bjcp_styles()
+        form_frame = ttk.Frame(parent_frame, padding=20)
+        form_frame.pack(fill="both", expand=True)
         
-        # Build the list for the dropdown
-        # Visual: "=== 2021 Beer Styles ===" (Header)
-        # Item: "1A American Light Lager" (Value)
+        # Data
+        default_bev = {'id': str(uuid.uuid4()), 'name': '', 'bjcp': '', 'abv': '', 'ibu': '', 'srm': '', 'description': ''}
+        data = bev_data.copy() if bev_data else default_bev
         
-        style_display_list = []
-        style_map = {} # Map "Code Name" -> Style Dict
-        
-        current_guide = None
-        
-        for s in raw_styles:
-            guide = s.get('guide', 'Unknown Guide')
+        # Pre-load BJCP
+        styles = self.settings_manager.load_bjcp_styles()
+        style_list = []
+        style_map = {}
+        for s in styles:
+            display = f"{s.get('code')} {s.get('name')}"
+            style_list.append(display)
+            style_map[display] = s
             
-            # Insert Header if guide changes
-            if guide != current_guide:
-                style_display_list.append(f"=== {guide} Styles ===")
-                current_guide = guide
-            
-            code = s.get('code', '')
-            name = s.get('name', '')
-            
-            # Standard Clean Format: "1A American Light Lager"
-            display_str = f"{code} {name}"
-            
-            style_display_list.append(display_str)
-            style_map[display_str] = s
-
-        # --- STRICT MODE CHECK ---
-        current_bjcp = data.get('bjcp', '').strip()
+        current_bjcp = data.get('bjcp', '')
+        if current_bjcp and current_bjcp not in style_map: current_bjcp = "" # Strict check
         
-        # Strict Check: If the current string is NOT in our valid map, clear it.
-        # This handles migration from old free-text styles.
-        if current_bjcp and current_bjcp not in style_map:
-            current_bjcp = "" # Strict Clear
-            
         temp_vars = {
             'id': tk.StringVar(value=data.get('id')),
             'name': tk.StringVar(value=data.get('name')),
-            'bjcp': tk.StringVar(value=current_bjcp), 
+            'bjcp': tk.StringVar(value=current_bjcp),
             'abv': tk.StringVar(value=data.get('abv')),
             'ibu': tk.StringVar(value=str(data.get('ibu', '')) if data.get('ibu') is not None else ''),
             'srm': tk.StringVar(value=str(data.get('srm', '')) if data.get('srm') is not None else ''),
-            'description': tk.StringVar(value=data.get('description'))
         }
+        
+        # Fields
+        def add_row(label, var, width=30):
+            f = ttk.Frame(form_frame); f.pack(fill="x", pady=5)
+            ttk.Label(f, text=label, width=15, anchor="w").pack(side="left")
+            ttk.Entry(f, textvariable=var, width=width).pack(side="left", padx=5, fill="x", expand=True)
 
-        row_idx = tk.IntVar(value=0)
-
-        def add_field(parent, label_text, var, width, is_text=False, max_len=None, row=None):
-            ttk.Label(parent, text=label_text, width=15, anchor="w").grid(row=row, column=0, padx=5, pady=5 if not is_text else (10,0), sticky='w')
-            if is_text:
-                text_widget = tk.Text(parent, height=5, width=width, wrap=tk.WORD)
-                text_widget.insert(tk.END, var.get())
-                text_widget.grid(row=row, column=1, sticky='nsew', padx=5, pady=5)
-                return text_widget 
-            else:
-                entry = ttk.Entry(parent, textvariable=var, width=width)
-                entry.grid(row=row, column=1, sticky='ew', padx=5, pady=5)
-                if max_len:
-                    ttk.Label(parent, text=f"({max_len} chars)", font=('TkDefaultFont', 8, 'italic')).grid(row=row, column=2, sticky='w', padx=2)
-                return entry 
-
-        form_frame.grid_columnconfigure(0, weight=0); form_frame.grid_columnconfigure(1, weight=1); form_frame.grid_columnconfigure(2, weight=0)
+        add_row("Beverage Name:", temp_vars['name'])
         
-        # 1. Beverage Name
-        name_entry = add_field(form_frame, "Beverage Name:", temp_vars['name'], 25, row=row_idx.get(), max_len=35); row_idx.set(row_idx.get() + 1)
+        f_style = ttk.Frame(form_frame); f_style.pack(fill="x", pady=5)
+        ttk.Label(f_style, text="BJCP Style:", width=15, anchor="w").pack(side="left")
+        cb = ttk.Combobox(f_style, textvariable=temp_vars['bjcp'], values=style_list, state="readonly")
+        cb.pack(side="left", padx=5, fill="x", expand=True)
         
-        # 2. BJCP Style (Strict Dropdown)
-        ttk.Label(form_frame, text="BJCP Style:", width=15, anchor="w").grid(row=row_idx.get(), column=0, padx=5, pady=5, sticky='w')
+        # --- REWORKED VITAL STATISTICS ROW ---
+        f_stats = ttk.Frame(form_frame); f_stats.pack(fill="x", pady=5)
         
-        style_combo = ttk.Combobox(form_frame, textvariable=temp_vars['bjcp'], values=style_display_list, state="readonly", width=40)
-        style_combo.grid(row=row_idx.get(), column=1, sticky='ew', padx=5, pady=5)
+        # Left Label
+        ttk.Label(f_stats, text="Vital Statistics:", width=15, anchor="w").pack(side="left")
         
-        row_idx.set(row_idx.get() + 1)
+        # Right Side Container to group ABV/IBU/SRM
+        stats_group = ttk.Frame(f_stats)
+        stats_group.pack(side="left", padx=5, fill="x")
         
-        # 3. Compact Row for ABV / IBU / SRM
-        stats_frame = ttk.Frame(form_frame)
-        stats_frame.grid(row=row_idx.get(), column=0, columnspan=3, sticky='w')
+        # ABV
+        ttk.Label(stats_group, text="ABV:").pack(side="left")
+        ttk.Entry(stats_group, textvariable=temp_vars['abv'], width=6).pack(side="left", padx=(5, 15))
         
-        ttk.Label(stats_frame, text="ABV:").pack(side='left', padx=(5, 5))
-        ttk.Entry(stats_frame, textvariable=temp_vars['abv'], width=6).pack(side='left')
+        # IBU
+        ttk.Label(stats_group, text="IBU:").pack(side="left")
+        ttk.Entry(stats_group, textvariable=temp_vars['ibu'], width=6).pack(side="left", padx=(5, 15))
         
-        ttk.Label(stats_frame, text="IBU:").pack(side='left', padx=(15, 5))
-        ttk.Entry(stats_frame, textvariable=temp_vars['ibu'], width=6).pack(side='left')
-        
-        ttk.Label(stats_frame, text="SRM:").pack(side='left', padx=(15, 5))
-        ttk.Entry(stats_frame, textvariable=temp_vars['srm'], width=6).pack(side='left')
-        ttk.Label(stats_frame, text="(Color 0-40)").pack(side='left', padx=(5, 0))
-        
-        row_idx.set(row_idx.get() + 1)
-        
-        # 4. Description
-        description_row = row_idx.get()
-        description_text_widget = add_field(form_frame, "Description:", temp_vars['description'], 40, is_text=True, max_len=255, row=description_row)
-        form_frame.grid_rowconfigure(description_row, weight=1); row_idx.set(row_idx.get() + 1)
-
-        # --- AUTO-FILL & HEADER LOGIC ---
-        def on_style_selected(event):
-            selected = temp_vars['bjcp'].get()
+        # SRM
+        ttk.Label(stats_group, text="SRM:").pack(side="left")
+        ttk.Entry(stats_group, textvariable=temp_vars['srm'], width=6).pack(side="left", padx=(5, 0))
+        # -------------------------------------
             
-            # Check if user clicked a Header
-            if selected not in style_map:
-                # Revert or Clear. Clearing is safest for strict mode.
-                style_combo.set('') 
-                return
-
-            # Valid selection: Auto-fill description if empty
-            style_data = style_map[selected]
-            impression = style_data.get('impression', '')
-            
-            current_desc = description_text_widget.get("1.0", tk.END).strip()
-            if not current_desc and impression != "PLACEHOLDER":
-                description_text_widget.delete("1.0", tk.END)
-                description_text_widget.insert("1.0", impression)
+        # Description
+        ttk.Label(form_frame, text="Description:").pack(anchor="w", pady=(10,0))
+        txt = tk.Text(form_frame, height=5, wrap="word", relief="sunken", borderwidth=1)
+        txt.pack(fill="both", expand=True, pady=5)
+        txt.insert("1.0", data.get('description', ''))
         
-        style_combo.bind("<<ComboboxSelected>>", on_style_selected)
+        # Auto-fill Desc
+        def on_style(e):
+            sel = cb.get()
+            if sel in style_map and not txt.get("1.0", "end").strip():
+                txt.insert("1.0", style_map[sel].get('impression', ''))
+        cb.bind("<<ComboboxSelected>>", on_style)
 
-        # Footer Buttons
-        btns_frame = ttk.Frame(popup, padding="10"); btns_frame.pack(fill="x", side="bottom")
+        # Footer
+        btns = ttk.Frame(parent_frame, padding=10)
+        btns.pack(fill="x", side="bottom")
         
-        ttk.Button(btns_frame, text="Save", command=lambda p=popup: self._save_beverage(temp_vars, description_text_widget, is_new, p, parent_popup)).pack(side="right", padx=5)
-        ttk.Button(btns_frame, text="Cancel", command=popup.destroy).pack(side="right", padx=5)
-        
-        # Help Button
-        ttk.Button(btns_frame, text="Help", width=8, 
-                   command=lambda: self._open_help_popup("beverage_library")).pack(side="right", padx=5)
+        ttk.Button(btns, text="Save", 
+                   command=lambda: self._save_beverage_from_view(temp_vars, txt, is_new, parent_frame)).pack(side="right", padx=5)
+        ttk.Button(btns, text="Cancel", 
+                   command=lambda: self._show_beverage_list_view(parent_frame)).pack(side="right", padx=5)
 
-        popup.update_idletasks()
-        if name_entry: name_entry.focus_set()
-
-    def _save_beverage(self, temp_vars, description_text_widget, is_new, popup_window, parent_popup):
+    def _save_beverage_from_view(self, vars, txt_widget, is_new, parent_frame):
         try:
-            name = temp_vars['name'].get().strip(); 
-            ibu_str = temp_vars['ibu'].get().strip(); 
-            abv = temp_vars['abv'].get().strip()
-            srm_str = temp_vars['srm'].get().strip() 
-            bjcp_style = temp_vars['bjcp'].get().strip(); 
-            description = description_text_widget.get("1.0", tk.END).strip()
+            name = vars['name'].get().strip()
+            if not name: messagebox.showerror("Error", "Name required."); return
             
-            if not name: messagebox.showerror("Input Error", "Beverage Name cannot be empty.", parent=popup_window); return
-            if len(name) > 35: messagebox.showerror("Input Error", "Beverage Name is limited to 35 characters.", parent=popup_window); return
-            if len(bjcp_style) > 35: messagebox.showerror("Input Error", "BJCP/Style Name is limited to 35 characters.", parent=popup_window); return
-            if not (0 <= len(abv) <= 5): messagebox.showerror("Input Error", "ABV is limited to 5 characters (e.g., 5.5).", parent=popup_window); return
-            
-            ibu = None
-            if ibu_str:
-                try:
-                    ibu = int(ibu_str)
-                    if not (0 <= ibu <= 200): raise ValueError 
-                except ValueError:
-                    messagebox.showerror("Input Error", "IBU must be blank or a whole number.", parent=popup_window); return
-
-            srm = None
-            if srm_str:
-                try:
-                    srm = int(srm_str) 
-                    if not (0 <= srm <= 40): raise ValueError
-                except ValueError:
-                    messagebox.showerror("Input Error", "SRM must be blank or a whole number between 0 and 40.", parent=popup_window); return
+            # Basic validation
+            ibu = int(vars['ibu'].get()) if vars['ibu'].get().strip() else None
+            srm = int(vars['srm'].get()) if vars['srm'].get().strip() else None
             
             new_data = {
-                "id": temp_vars['id'].get(), "name": name, "bjcp": bjcp_style, 
-                "abv": abv, "ibu": ibu, "srm": srm, "description": description 
+                'id': vars['id'].get(),
+                'name': name,
+                'bjcp': vars['bjcp'].get(),
+                'abv': vars['abv'].get(),
+                'ibu': ibu,
+                'srm': srm,
+                'description': txt_widget.get("1.0", "end").strip()
             }
-            beverage_list = self.settings_manager.get_beverage_library().get('beverages', [])
             
-            if is_new: beverage_list.append(new_data)
+            lib = self.settings_manager.get_beverage_library().get('beverages', [])
+            if is_new:
+                lib.append(new_data)
             else:
-                found = False
-                for i, b in enumerate(beverage_list):
-                    if b.get('id') == new_data['id']: 
-                        # Preserve legacy fields if needed
-                        if b.get('source_library'):
-                            new_data['source_library'] = b['source_library']
-                        beverage_list[i] = new_data; 
-                        found = True; 
+                for i, b in enumerate(lib):
+                    if b['id'] == new_data['id']:
+                        lib[i] = new_data
                         break
-                if not found: messagebox.showerror("Save Error", "Could could not find the original beverage to update.", parent=popup_window); return
-
-            sorted_list = sorted(beverage_list, key=lambda b: b.get('name', '').lower())
-            self.settings_manager.save_beverage_library(sorted_list)
-            
+                        
+            self.settings_manager.save_beverage_library(lib)
             self._populate_beverage_dropdowns()
             self._refresh_beverage_metadata()
             
-            if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists(): self.workflow_app._refresh_all_columns()
+            self._show_beverage_list_view(parent_frame)
             
-            # Close the Edit Popup
-            popup_window.destroy()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid numeric format for IBU/SRM.")
+
+    def _delete_beverage_from_view(self, parent_frame, bev_data):
+        if messagebox.askyesno("Confirm", f"Delete '{bev_data.get('name')}'?"):
+            # Update assignments first
+            assignments = self.settings_manager.get_sensor_beverage_assignments()
+            b_id = bev_data['id']
+            updated = False
+            for i in range(len(assignments)):
+                if assignments[i] == b_id:
+                    assignments[i] = UNASSIGNED_BEVERAGE_ID
+                    self.settings_manager.save_sensor_beverage_assignment(i, UNASSIGNED_BEVERAGE_ID)
+                    updated = True
             
-            # REFRESH parent in-place instead of destroying/re-opening
-            if parent_popup and parent_popup.winfo_exists():
-                 self._populate_beverage_library_list(parent_popup)
+            # Remove from lib
+            lib = self.settings_manager.get_beverage_library().get('beverages', [])
+            lib = [b for b in lib if b['id'] != b_id]
+            self.settings_manager.save_beverage_library(lib)
             
-            print(f"UIManager: Beverage '{name}' saved and sorted successfully.")
-
-        except Exception as e:
-            messagebox.showerror("Error", f"An unexpected error occurred while saving the beverage: {e}", parent=popup_window)
-
-    def _delete_beverage(self, beverage_id, beverage_name, parent_popup):
-        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the beverage '{beverage_name}'? This cannot be undone.", parent=parent_popup): return
-            
-        beverage_list = self.settings_manager.get_beverage_library().get('beverages', [])
-        new_list = [b for b in beverage_list if b.get('id') != beverage_id]
-        assignments = self.settings_manager.get_sensor_beverage_assignments()
-        
-        first_beverage_id = new_list[0]['id'] if new_list else self.settings_manager._get_default_beverage_library().get('beverages')[0]['id']
-        
-        needs_assignment_update = False
-        for i in range(len(assignments)):
-            if assignments[i] == beverage_id:
-                assignments[i] = first_beverage_id
-                needs_assignment_update = True
-        
-        if needs_assignment_update:
-            for i in range(len(assignments)): self.settings_manager.save_sensor_beverage_assignment(i, assignments[i])
-            print("UIManager: Re-assigned taps after deleting a beverage.")
-            
-        sorted_list = sorted(new_list, key=lambda b: b.get('name', '').lower())
-        self.settings_manager.save_beverage_library(sorted_list)
-
-        self._populate_beverage_dropdowns()
-        self._refresh_beverage_metadata()
-
-        if hasattr(self, 'workflow_app') and self.workflow_app and self.workflow_app.popup.winfo_exists(): self.workflow_app._refresh_all_columns()
-        
-        # REFRESH parent in-place instead of destroying/re-opening
-        if parent_popup and parent_popup.winfo_exists():
-             self._populate_beverage_library_list(parent_popup)
-             if not new_list:
-                 messagebox.showinfo("Library Empty", "The Beverage Library is now empty.", parent=self.root)
-
+            self._populate_beverage_dropdowns()
+            self._refresh_beverage_metadata()
+            self._show_beverage_list_view(parent_frame)
+    
     # --- FIX: Added 'row' parameter to the internal helper function signature ---
     def _add_link_field(self, parent, label_text, var, unit, row, readonly=False):
         """Helper to create and place linked fields for the edit popup."""
@@ -1659,375 +1559,228 @@ class PopupManagerMixin:
         temp_vars['tare_weight_kg']._trace_id = temp_vars['tare_weight_kg'].trace_add("write", trace_handler('tare_weight_kg'))
         temp_vars['total_weight_kg']._trace_id = temp_vars['total_weight_kg'].trace_add("write", trace_handler('total_weight_kg'))
 
-    # --- Keg Settings Popup Logic (RESTRUCTURED TO MIRROR BEVERAGE LAYOUT) ---
-
-    def _open_keg_settings_popup(self):
-        # UI mirrors the Beverage Library for consistent behavior
-        popup = tk.Toplevel(self.root)
-        popup.title("Keg Settings")
+    def _show_keg_list_view(self, parent_frame, popup_window=None):
+        """Renders the Keg List View into the provided frame."""
+        # Clear existing content
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+            
+        # --- List Area (Top, Expanded) ---
+        list_container = ttk.Frame(parent_frame)
+        list_container.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # FIX: Use center_popup to ensure title bar/X is visible
-        self._center_popup(popup, 700, 510)
-        
-        popup.transient(self.root)
-        popup.grab_set() 
-        
-        main_frame = ttk.Frame(popup, padding="10"); main_frame.pack(expand=True, fill="both")
-        
-        canvas = tk.Canvas(main_frame, borderwidth=0)
-        v_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(list_container, borderwidth=0, highlightthickness=0)
+        v_scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
         scroll_frame = ttk.Frame(canvas)
-        v_scrollbar.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
+        
+        v_scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
         canvas.configure(yscrollcommand=v_scrollbar.set)
         
-        # Adjust canvas window width to fit the geometry
-        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=680) 
-
-        def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
-        scroll_frame.bind("<Configure>", on_frame_configure)
-        def on_canvas_resize(event): canvas.itemconfig(canvas_window, width=event.width)
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        
+        def on_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
+        scroll_frame.bind("<Configure>", on_configure)
+        
+        # --- FIX: Changed event.width to e.width ---
+        def on_canvas_resize(e): canvas.itemconfig(canvas_window, width=e.width)
         canvas.bind('<Configure>', on_canvas_resize)
 
-        # Store scroll_frame on the popup object so we can access it later for refreshing
-        popup.scroll_frame = scroll_frame
-
-        # Initial Population of the list
-        self._populate_keg_settings_list(popup)
-        
-        # --- FIX: Restore Footer Buttons ---
-        footer_frame = ttk.Frame(popup, padding="10")
-        footer_frame.pack(fill="x", side="bottom")
-        
-        ttk.Button(footer_frame, text="Add New Keg", 
-                   command=lambda p=popup: self._open_keg_edit_popup(None, p)).pack(side="left", padx=5)
-
-        ttk.Button(footer_frame, text="Close", command=popup.destroy).pack(side="right", padx=5)
-        
-        ttk.Button(footer_frame, text="Help", width=8,
-                   command=lambda: self._open_help_popup("keg_settings")).pack(side="right", padx=5)
-        # -------------------------------
-        
-        popup.update_idletasks()
-
-    def _populate_keg_settings_list(self, popup_window):
-        """Helper to rebuild the keg list inside the existing popup window."""
-        scroll_frame = getattr(popup_window, 'scroll_frame', None)
-        if not scroll_frame: return
-
-        # Clear existing rows/widgets in the scroll frame
-        for widget in scroll_frame.winfo_children():
-            widget.destroy()
-
-        self.keg_settings_popup_vars = []
-        
-        # Fetch Data
-        keg_list_unsorted = self.settings_manager.get_keg_definitions()
-        keg_list = sorted(keg_list_unsorted, key=lambda k: k.get('title', '').lower())
+        # --- Populate Rows ---
+        keg_list = sorted(self.settings_manager.get_keg_definitions(), key=lambda k: k.get('title', '').lower())
         beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
         beverage_map = {b['id']: b['name'] for b in beverage_lib}
 
-        # --- Helper to force alignment across separate row frames ---
-        def configure_grid_cols(container):
-            container.grid_columnconfigure(0, weight=1, minsize=220) # Title
-            container.grid_columnconfigure(1, weight=1, minsize=220) # Contents
-            container.grid_columnconfigure(2, weight=0, minsize=80)  # Edit
-            container.grid_columnconfigure(3, weight=0, minsize=80)  # Delete
+        # Header
+        header = ttk.Frame(scroll_frame)
+        header.pack(fill="x", pady=0)
+        header.grid_columnconfigure(0, weight=1) # Name
+        header.grid_columnconfigure(1, weight=2) # Contents
+        header.grid_columnconfigure(2, weight=0, minsize=150) # Actions
 
-        # --- Header Row ---
-        header_frame = ttk.Frame(scroll_frame)
-        header_frame.grid(row=0, column=0, columnspan=4, sticky='ew', padx=5, pady=5)
-        configure_grid_cols(header_frame)
+        # Rename "Keg Title" -> "Keg Name"
+        ttk.Label(header, text="Keg Name", font=('TkDefaultFont', 10, 'bold'), anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ttk.Label(header, text="Contents", font=('TkDefaultFont', 10, 'bold'), anchor="w").grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+        ttk.Label(header, text="Actions", font=('TkDefaultFont', 10, 'bold'), anchor="e").grid(row=0, column=2, sticky="ew", padx=15, pady=5)
         
-        ttk.Label(header_frame, text="Keg Title", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, padx=5, sticky='w')
-        
-        # Contents Header (Left-Justified with padding to prevent crowding)
-        contents_header = ttk.Label(header_frame, text="Contents (Beverage)", font=('TkDefaultFont', 10, 'bold'))
-        contents_header.grid(row=0, column=1, padx=(5, 30), sticky='w') 
-        
-        ttk.Label(header_frame, text="Actions", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=2, columnspan=2, sticky='e', padx=(5, 25))
+        ttk.Separator(scroll_frame, orient="horizontal").pack(fill="x", pady=0)
 
-        BG_EVEN = '#FFFFFF'; BG_ODD = '#F5F5F5' 
-
-        for i in range(len(keg_list)):
-            keg = keg_list[i]; row = i + 1; bg_color = BG_ODD if i % 2 else BG_EVEN
+        for i, keg in enumerate(keg_list):
+            row_frame = ttk.Frame(scroll_frame)
+            row_frame.pack(fill="x", pady=0)
             
-            row_frame = tk.Frame(scroll_frame, bg=bg_color, relief='flat', bd=0)
-            row_frame.grid(row=row, column=0, columnspan=4, sticky='ew', pady=(1, 0))
-            configure_grid_cols(row_frame)
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_frame.grid_columnconfigure(1, weight=2)
+            row_frame.grid_columnconfigure(2, weight=0, minsize=150)
             
-            # Col 0: Keg Title
-            title_label_text = tk.StringVar(value=keg.get('title', ''))
-            ttk.Label(row_frame, textvariable=title_label_text, anchor='w', background=bg_color, 
-                      padding=(5, 5)).grid(row=0, column=0, sticky='ew', padx=5)
-            self.keg_settings_popup_vars.append(title_label_text)
+            bg = "#FFFFFF" if i % 2 == 0 else "#F5F5F5"
             
-            # Col 1: Contents (Beverage)
-            bev_id = keg.get('beverage_id', UNASSIGNED_BEVERAGE_ID)
-            bev_name = beverage_map.get(bev_id, "")
-            if not bev_name and bev_id != UNASSIGNED_BEVERAGE_ID: bev_name = "Unknown"
-            elif not bev_name: bev_name = "" 
+            title = keg.get('title', 'Unknown')
+            bev_name = beverage_map.get(keg.get('beverage_id'), "")
             
-            ttk.Label(row_frame, text=bev_name, anchor='w', background=bg_color,
-                      padding=(5, 5)).grid(row=0, column=1, sticky='ew', padx=(5, 30))
-
-            # Col 2: Edit Button
-            ttk.Button(row_frame, text="Edit", width=8, 
-                       command=lambda k=keg.copy(), p=popup_window: self._open_keg_edit_popup(k, p)).grid(row=0, column=2, padx=(5, 5), pady=2, sticky='e')
-
-            # Col 3: Delete Button
-            ttk.Button(row_frame, text="Delete", width=8, style="TButton", 
-                       command=lambda k_id=keg.get('id'), k_name=keg.get('title'), 
-                       p=popup_window: self._delete_keg_definition(k_id, k_name, p)).grid(row=0, column=3, padx=(0, 5), pady=2, sticky='e')
-
-        # Footer Area (Re-used from open logic, no need to redraw)
-        # However, we need to ensure the footer buttons are packed in the _open function (which they are)
-        
-        scroll_frame.update_idletasks()
-    
-    # def _open_keg_settings_popup(self):
-        # # UI mirrors the Beverage Library for consistent behavior
-        # popup = tk.Toplevel(self.root)
-        # popup.title("Keg Settings")
-        
-        # # Fixed window size
-        # popup.geometry("700x510") 
-        
-        # popup.transient(self.root)
-        # popup.grab_set() 
-        
-        # main_frame = ttk.Frame(popup, padding="10"); main_frame.pack(expand=True, fill="both")
-        
-        # canvas = tk.Canvas(main_frame, borderwidth=0)
-        # v_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        # scroll_frame = ttk.Frame(canvas)
-        # v_scrollbar.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
-        # canvas.configure(yscrollcommand=v_scrollbar.set)
-        
-        # # Adjust canvas window width to fit the geometry
-        # canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=680) 
-
-        # def on_frame_configure(event): canvas.configure(scrollregion=canvas.bbox("all"))
-        # scroll_frame.bind("<Configure>", on_frame_configure)
-        # def on_canvas_resize(event): canvas.itemconfig(canvas_window, width=event.width)
-        # canvas.bind('<Configure>', on_canvas_resize)
-
-        # self.keg_settings_popup_vars = []
-        
-        # # Auto-sort the list upon opening the popup
-        # keg_list_unsorted = self.settings_manager.get_keg_definitions()
-        # keg_list = sorted(keg_list_unsorted, key=lambda k: k.get('title', '').lower())
-        
-        # # Pre-fetch beverage library for lookup
-        # beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
-        # beverage_map = {b['id']: b['name'] for b in beverage_lib}
-
-        # # --- Helper to force alignment across separate row frames ---
-        # def configure_grid_cols(container):
-            # container.grid_columnconfigure(0, weight=1, minsize=220) # Title
-            # container.grid_columnconfigure(1, weight=1, minsize=220) # Contents
-            # container.grid_columnconfigure(2, weight=0, minsize=80)  # Edit
-            # container.grid_columnconfigure(3, weight=0, minsize=80)  # Delete
-
-        # # --- Header Row ---
-        # header_frame = ttk.Frame(scroll_frame)
-        # header_frame.grid(row=0, column=0, columnspan=4, sticky='ew', padx=5, pady=5)
-        # configure_grid_cols(header_frame)
-        
-        # # Header: Keg Title (Left)
-        # ttk.Label(header_frame, text="Keg Title", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, padx=5, sticky='w')
-        
-        # # Header: Contents (Left-Justified with extra right padding)
-        # # padx=(5, 30) adds 5px left and 30px right padding to push it away from buttons
-        # contents_header = ttk.Label(header_frame, text="Contents (Beverage)", font=('TkDefaultFont', 10, 'bold'))
-        # contents_header.grid(row=0, column=1, padx=(5, 60), sticky='w') 
-        
-        # # Header: Actions (Right)
-        # ttk.Label(header_frame, text="Actions", font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=2, columnspan=2, sticky='e', padx=(5, 25))
-
-        # BG_EVEN = '#FFFFFF'; BG_ODD = '#F5F5F5' 
-
-        # for i in range(len(keg_list)):
-            # keg = keg_list[i]; row = i + 1; bg_color = BG_ODD if i % 2 else BG_EVEN
+            # Increased padx to 10 for "Keg Name" to give it breathing room from left edge
+            tk.Label(row_frame, text=title, anchor="w", bg=bg).grid(row=0, column=0, sticky="nsew", padx=(10,0), pady=0, ipady=5)
+            tk.Label(row_frame, text=bev_name, anchor="w", bg=bg).grid(row=0, column=1, sticky="nsew", padx=0, pady=0, ipady=5)
             
-            # row_frame = tk.Frame(scroll_frame, bg=bg_color, relief='flat', bd=0)
-            # row_frame.grid(row=row, column=0, columnspan=4, sticky='ew', pady=(1, 0))
+            btn_frame = tk.Frame(row_frame, bg=bg)
+            btn_frame.grid(row=0, column=2, sticky="nsew", padx=0, pady=0)
             
-            # # Apply same column sizing to this row
-            # configure_grid_cols(row_frame)
+            ttk.Button(btn_frame, text="Delete", width=8,
+                       command=lambda k=keg: self._delete_keg_from_view(parent_frame, k)).pack(side="right", padx=5, pady=2)
             
-            # # Col 0: Keg Title
-            # title_label_text = tk.StringVar(value=keg.get('title', ''))
-            # ttk.Label(row_frame, textvariable=title_label_text, anchor='w', background=bg_color, 
-                      # padding=(5, 5)).grid(row=0, column=0, sticky='ew', padx=5)
-            # self.keg_settings_popup_vars.append(title_label_text)
-            
-            # # Col 1: Contents (Beverage) - Resolved Name
-            # bev_id = keg.get('beverage_id', UNASSIGNED_BEVERAGE_ID)
-            # bev_name = beverage_map.get(bev_id, "")
-            # if not bev_name and bev_id != UNASSIGNED_BEVERAGE_ID: 
-                # bev_name = "Unknown"
-            # elif not bev_name:
-                # bev_name = "" 
-            
-            # # FIX: Added padx=(5, 30) to create the buffer zone on the right
-            # ttk.Label(row_frame, text=bev_name, anchor='w', background=bg_color,
-                      # padding=(5, 5)).grid(row=0, column=1, sticky='w', padx=(5, 60))
+            ttk.Button(btn_frame, text="Edit", width=8,
+                       command=lambda k=keg: self._show_keg_edit_view(parent_frame, k)).pack(side="right", padx=2, pady=2)
 
-            # # Col 2: Edit Button
-            # ttk.Button(row_frame, text="Edit", width=8, 
-                       # command=lambda k=keg.copy(), p=popup: self._open_keg_edit_popup(k, p)).grid(row=0, column=2, padx=(5, 5), pady=2, sticky='e')
-
-            # # Col 3: Delete Button
-            # ttk.Button(row_frame, text="Delete", width=8, style="TButton", 
-                       # command=lambda k_id=keg.get('id'), k_name=keg.get('title'), 
-                       # p=popup: self._delete_keg_definition(k_id, k_name, p)).grid(row=0, column=3, padx=(0, 5), pady=2, sticky='e')
-
-        # footer_frame = ttk.Frame(popup, padding="10"); 
-        # footer_frame.pack(fill="x", side="bottom", pady=(10, 0))
+        # --- Footer Area (Bottom) ---
+        footer_frame = ttk.Frame(parent_frame, padding=10)
+        footer_frame.pack(fill="x", side="bottom")
         
-        # ttk.Button(footer_frame, text="Add New Keg", 
-                   # command=lambda p=popup: self._open_keg_edit_popup(None, p)).pack(side="left", padx=5)
+        ttk.Button(footer_frame, text="+ Add New Keg", 
+                   command=lambda: self._show_keg_edit_view(parent_frame, None)).pack(side="left", padx=5)
 
-        # ttk.Button(footer_frame, text="Close", command=popup.destroy).pack(side="right", padx=5)
-        # # Help Button
-        # ttk.Button(footer_frame, text="Help", width=8,
-                   # command=lambda: self._open_help_popup("keg_settings")).pack(side="right", padx=5)
-        
-        # scroll_frame.update_idletasks()
+        if popup_window:
+            ttk.Button(footer_frame, text="Close", command=popup_window.destroy).pack(side="right", padx=5)
+            
+        ttk.Button(footer_frame, text="Help", width=8,
+                   command=lambda: self._open_help_popup("keg_settings")).pack(side="right", padx=5)
 
-    def _open_keg_edit_popup(self, keg_data=None, parent_popup=None):
+    def _show_keg_edit_view(self, parent_frame, keg_data):
+        """Renders the Keg Edit Form into the provided frame (Drill-Down)."""
+        # Clear List View
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+            
         is_new = keg_data is None
-        popup = tk.Toplevel(self.root)
-        keg_title = keg_data.get('title', 'New Keg') if keg_data else 'New Keg'
-        popup.title("Add New Keg" if is_new else f"Edit {keg_title}")
-        popup.geometry("600x480")
-        popup.transient(self.root)
-        popup.grab_set()
-
-        form_frame = ttk.Frame(popup, padding="15")
-        form_frame.pack(expand=True, fill="both")
+        title_text = "Add New Keg" if is_new else f"Edit {keg_data.get('title')}"
         
-        default_data = self.settings_manager._get_default_keg_definitions()[0] 
-        data = keg_data if keg_data else default_data.copy()
+        # Header
+        header_frame = ttk.Frame(parent_frame, padding=10)
+        header_frame.pack(fill="x", side="top")
+        ttk.Label(header_frame, text=title_text, font=('TkDefaultFont', 14, 'bold')).pack(side="left")
+        
+        # Form Container
+        form_frame = ttk.Frame(parent_frame, padding=20)
+        form_frame.pack(fill="both", expand=True)
+        
+        # --- Load Data & Vars ---
+        default_data = self.settings_manager._get_default_keg_definitions()[0]
+        data = keg_data.copy() if keg_data else default_data.copy()
         
         display_units = self.settings_manager.get_display_units()
         weight_unit = "kg" if display_units == "metric" else "lb"
         volume_unit = "Liters" if display_units == "metric" else "Gallons"
-        weight_conversion = 1.0 if display_units == "metric" else KG_TO_LB
-        volume_conversion = 1.0 if display_units == "metric" else LITERS_TO_GALLONS
-        entry_width = 10 
-
-        max_vol_l = data.get('maximum_full_volume_liters', default_data['maximum_full_volume_liters'])
+        weight_conv = 1.0 if display_units == "metric" else KG_TO_LB
+        vol_conv = 1.0 if display_units == "metric" else LITERS_TO_GALLONS
+        
+        # Pre-calculations
         start_vol_l = data.get('calculated_starting_volume_liters', 0.0)
+        max_vol_l = data.get('maximum_full_volume_liters', default_data['maximum_full_volume_liters'])
         dispensed_l = data.get('current_dispensed_liters', 0.0)
-        remaining_l = max(0.0, start_vol_l - dispensed_l)
-        empty_kg = data.get('tare_weight_kg', 0.0)
-        total_kg = data.get('starting_total_weight_kg', 0.0)
-        max_vol_display = max_vol_l * volume_conversion
-        start_vol_display = start_vol_l * volume_conversion
-        remaining_display = remaining_l * volume_conversion
-
+        current_l = max(0.0, start_vol_l - dispensed_l)
+        
         temp_vars = {
             'id': tk.StringVar(value=data.get('id', str(uuid.uuid4()))),
-            'title': tk.StringVar(value=data.get('title')),
-            'max_volume_display': tk.StringVar(value=f"{max_vol_display:.2f}"),
-            'tare_weight_kg': tk.StringVar(value=f"{empty_kg:.2f}"), 
-            'total_weight_kg': tk.StringVar(value=f"{total_kg:.2f}"), 
-            'starting_volume_display': tk.StringVar(value=f"{start_vol_display:.2f}"),
-            'current_volume_display': tk.StringVar(value=f"{remaining_display:.2f}"), 
-            'current_dispensed_liters': tk.StringVar(value=f"{dispensed_l:.2f}"),
-            'beverage_name_var': tk.StringVar(), 
-            'original_keg_data': data.copy()
+            'title': tk.StringVar(value=data.get('title', '')),
+            'max_volume_display': tk.StringVar(value=f"{max_vol_l * vol_conv:.2f}"),
+            'tare_weight_kg': tk.StringVar(value=f"{data.get('tare_weight_kg', 0.0):.2f}"),
+            'total_weight_kg': tk.StringVar(value=f"{data.get('starting_total_weight_kg', 0.0):.2f}"),
+            'starting_volume_display': tk.StringVar(value=f"{start_vol_l * vol_conv:.2f}"),
+            'current_volume_display': tk.StringVar(value=f"{current_l * vol_conv:.2f}"),
+            'beverage_name_var': tk.StringVar(),
+            'original_keg_data': data
         }
-        # Helper vars
-        temp_vars['tare_entry'] = tk.StringVar(value=f"{empty_kg * weight_conversion:.2f}")
-        temp_vars['total_entry'] = tk.StringVar(value=f"{total_kg * weight_conversion:.2f}")
+        
+        # Display vars for weights
+        temp_vars['tare_entry'] = tk.StringVar(value=f"{data.get('tare_weight_kg', 0.0) * weight_conv:.2f}")
+        temp_vars['total_entry'] = tk.StringVar(value=f"{data.get('starting_total_weight_kg', 0.0) * weight_conv:.2f}")
 
-        row_idx = tk.IntVar(value=0)
-        
-        # Helper re-definition
-        def add_field(parent, label_text, var, unit="", row=None, readonly=False, is_volume=False, is_weight=False, is_title=False):
-            ttk.Label(parent, text=label_text, width=25, anchor="w").grid(row=row, column=0, padx=5, pady=5, sticky='w')
-            if is_weight:
-                base_name = var.get().split('_')[0]; display_var_name = f"{base_name}_entry"; display_var = temp_vars[display_var_name]
-            elif is_volume or not is_title: display_var = var
-            else: display_var = var
-            widget_width = 30 if is_title else entry_width
-            entry = ttk.Entry(parent, textvariable=display_var, width=widget_width, state=('readonly' if readonly else 'normal'))
-            if is_weight: temp_vars[var.get().replace('_weight_kg', '_entry_widget')] = entry
-            entry.grid(row=row, column=1, sticky='ew', padx=5, pady=5)
-            if is_weight and not readonly:
-                 def update_kg_on_change(event, kg_var_name, entry_var):
-                     try:
-                         kg_value = float(entry_var.get()) / weight_conversion
-                         temp_vars[kg_var_name].set(f"{kg_value:.2f}")
-                     except ValueError: temp_vars[kg_var_name].set("0.00")
-                 entry.bind("<FocusOut>", lambda event, kg_var=var.get(), entry_var=display_var: update_kg_on_change(event, kg_var, entry_var))
-            if unit: ttk.Label(parent, text=unit).grid(row=row, column=2, sticky='w', padx=2)
-            row_idx.set(row + 1)
-            return entry
+        # --- Helper for Rows ---
+        row_idx = 0
+        def add_row(label, var, unit="", readonly=False):
+            nonlocal row_idx
+            f = ttk.Frame(form_frame); f.pack(fill="x", pady=5)
+            ttk.Label(f, text=label, width=25, anchor="w").pack(side="left")
+            e = ttk.Entry(f, textvariable=var, width=15, state='readonly' if readonly else 'normal')
+            e.pack(side="left", padx=5)
+            if unit: ttk.Label(f, text=unit).pack(side="left")
+            row_idx += 1
+            return e
 
-        form_frame.grid_columnconfigure(1, weight=1)
+        # 1. Beverage Dropdown
+        f_bev = ttk.Frame(form_frame); f_bev.pack(fill="x", pady=5)
+        ttk.Label(f_bev, text="Contents (Beverage):", width=25, anchor="w").pack(side="left")
         
-        # Row 0: Contents Dropdown
-        ttk.Label(form_frame, text="Contents (Beverage):", width=25, anchor='w').grid(row=row_idx.get(), column=0, padx=5, pady=5, sticky='w')
+        # Create Combobox (and store ref for refresh)
+        bev_dropdown = ttk.Combobox(f_bev, textvariable=temp_vars['beverage_name_var'], state="readonly", width=30)
+        bev_dropdown.pack(side="left", padx=5)
+        form_frame.beverage_combobox = bev_dropdown # Store reference on the frame for tab-switch refresh logic
         
-        # Populate Beverages
-        beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
-        bev_names = [b['name'] for b in beverage_lib]
-        bev_names.insert(0, "Empty")
-        
-        # Set Initial Value
-        current_bev_id = data.get('beverage_id', UNASSIGNED_BEVERAGE_ID)
-        if current_bev_id == UNASSIGNED_BEVERAGE_ID:
-            temp_vars['beverage_name_var'].set("Empty")
-        else:
-            bev = next((b for b in beverage_lib if b['id'] == current_bev_id), None)
-            temp_vars['beverage_name_var'].set(bev['name'] if bev else "Empty")
-            
-        bev_dropdown = ttk.Combobox(form_frame, textvariable=temp_vars['beverage_name_var'], values=bev_names, state="readonly", width=28)
-        bev_dropdown.grid(row=row_idx.get(), column=1, sticky='ew', padx=5, pady=5)
-        row_idx.set(row_idx.get() + 1)
-        
-        ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx.get(), column=0, columnspan=3, sticky='ew', pady=5); row_idx.set(row_idx.get() + 1)
+        # Populate initial values
+        self._populate_keg_edit_dropdown(bev_dropdown, data.get('beverage_id'))
 
-        # Row 2+: Standard Keg Fields (Title, Max Vol, Weights...)
-        # Updated label to indicate character limit
-        title_entry = add_field(form_frame, "Keg Title (Max 24 chars):", temp_vars['title'], unit="", row=row_idx.get(), readonly=False, is_title=True); row_idx.set(row_idx.get())
-        add_field(form_frame, "Maximum Full Volume:", temp_vars['max_volume_display'], volume_unit, row=row_idx.get()); row_idx.set(row_idx.get())
+        ttk.Separator(form_frame, orient="horizontal").pack(fill="x", pady=10)
 
-        ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx.get(), column=0, columnspan=3, sticky='ew', pady=5); row_idx.set(row_idx.get() + 1)
+        # 2. Keg Fields
+        add_row("Keg Title (Max 24 chars):", temp_vars['title'])
+        add_row("Maximum Full Volume:", temp_vars['max_volume_display'], volume_unit)
         
-        link_frame = ttk.Frame(form_frame)
-        link_frame.grid(row=row_idx.get(), column=0, columnspan=3, sticky='ew')
-        link_frame.grid_columnconfigure(1, weight=0, minsize=entry_width*8) 
-        link_frame.grid_columnconfigure(2, weight=0) 
-        link_frame.grid_columnconfigure(3, weight=1)
-        row_idx.set(row_idx.get() + 1) 
-
-        tare_entry = add_field(link_frame, "Tare weight (empty weight):", tk.StringVar(value='tare_weight_kg'), weight_unit, row=0, is_weight=True)
-        total_entry = add_field(link_frame, "Starting Total Weight:", tk.StringVar(value='total_weight_kg'), weight_unit, row=1, is_weight=True)
-        calc_vol_entry = add_field(link_frame, "Starting Volume:", temp_vars['starting_volume_display'], unit="", row=2, readonly=True, is_volume=True)
+        ttk.Separator(form_frame, orient="horizontal").pack(fill="x", pady=10)
         
+        # 3. Weights & Calculator
+        # (Tare)
+        e_tare = add_row("Tare Weight (Empty):", temp_vars['tare_entry'], weight_unit)
+        # Bind calc logic
+        def on_weight_change(var_entry, var_kg):
+            try:
+                kg = float(var_entry.get()) / weight_conv
+                var_kg.set(f"{kg:.2f}")
+            except: pass
+        e_tare.bind("<FocusOut>", lambda e: on_weight_change(temp_vars['tare_entry'], temp_vars['tare_weight_kg']))
+        
+        # (Total)
+        e_total = add_row("Starting Total Weight:", temp_vars['total_entry'], weight_unit)
+        e_total.bind("<FocusOut>", lambda e: on_weight_change(temp_vars['total_entry'], temp_vars['total_weight_kg']))
+        
+        # (Starting Vol - Readonly)
+        add_row("Starting Volume:", temp_vars['starting_volume_display'], "", readonly=True)
+        
+        # Link traces for auto-calculation
         self._keg_edit_link_weight_to_volume(temp_vars, None)
-        ttk.Label(link_frame, text=volume_unit).grid(row=2, column=2, sticky='w', padx=2)
-        ttk.Button(link_frame, text="Use Starting Volume", width=18,
-                   command=lambda v=temp_vars: v['current_volume_display'].set(v['starting_volume_display'].get())).grid(row=2, column=3, sticky='w', padx=5)
-        
-        current_vol_entry = add_field(link_frame, "Current (Remaining) Volume:", temp_vars['current_volume_display'], volume_unit, row=3, is_volume=True)
-        
-        row_idx.set(row_idx.get() + 1)
-        ttk.Separator(form_frame, orient='horizontal').grid(row=row_idx.get(), column=0, columnspan=3, sticky='ew', pady=10); row_idx.set(row_idx.get() + 1)
-        
-        btns_frame = ttk.Frame(popup, padding="10")
-        btns_frame.pack(fill="x", side="bottom")
-        
-        ttk.Button(btns_frame, text="Save", command=lambda p=popup: self._save_keg_definition(temp_vars, is_new, p, parent_popup)).pack(side="right", padx=5)
-        ttk.Button(btns_frame, text="Cancel", command=lambda p=popup: self._keg_edit_check_cancel(temp_vars, p)).pack(side="right", padx=5)
-        ttk.Button(btns_frame, text="Help", width=8, command=lambda: self._open_help_popup("keg_settings")).pack(side="right", padx=5)
 
-        popup.update_idletasks()
-        if title_entry: title_entry.focus_set()
+        # (Current Vol)
+        f_curr = ttk.Frame(form_frame); f_curr.pack(fill="x", pady=5)
+        ttk.Label(f_curr, text="Current (Remaining) Volume:", width=25, anchor="w").pack(side="left")
+        ttk.Entry(f_curr, textvariable=temp_vars['current_volume_display'], width=15).pack(side="left", padx=5)
+        ttk.Label(f_curr, text=volume_unit).pack(side="left")
+        
+        # Button to copy starting to current
+        ttk.Button(f_curr, text="Reset to Full", 
+                   command=lambda: temp_vars['current_volume_display'].set(temp_vars['starting_volume_display'].get())
+                   ).pack(side="left", padx=15)
+
+        # --- Footer Buttons ---
+        btn_frame = ttk.Frame(parent_frame, padding=10)
+        btn_frame.pack(fill="x", side="bottom")
+        
+        ttk.Button(btn_frame, text="Save", 
+                   command=lambda: self._save_keg_from_view(temp_vars, is_new, parent_frame)).pack(side="right", padx=5)
+                   
+        ttk.Button(btn_frame, text="Cancel", 
+                   command=lambda: self._show_keg_list_view(parent_frame)).pack(side="right", padx=5)
+                   
+    def _populate_keg_edit_dropdown(self, combobox, current_id=None):
+        """Helper to refresh the dropdown in the keg edit form."""
+        beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
+        names = ["Empty"] + sorted([b['name'] for b in beverage_lib])
+        combobox['values'] = names
+        
+        # If initializing (current_id passed), set selection
+        if current_id is not None:
+            if current_id == UNASSIGNED_BEVERAGE_ID:
+                combobox.set("Empty")
+            else:
+                found = next((b for b in beverage_lib if b['id'] == current_id), None)
+                combobox.set(found['name'] if found else "Empty")
 
     def _keg_edit_check_cancel(self, temp_vars, popup_window):
         """
@@ -2111,131 +1864,96 @@ class PopupManagerMixin:
         
         confirm_popup.protocol("WM_DELETE_WINDOW", return_to_edit)
 
-    def _save_keg_definition(self, temp_vars, is_new, popup_window, parent_popup):
+    def _save_keg_from_view(self, temp_vars, is_new, parent_frame):
+        """Saves keg data and restores list view."""
         try:
+            # Force focus out to ensure calcs run
+            parent_frame.focus_set()
+            
+            # --- Logic duplicated from _save_keg_definition but adapted for Frame ---
             display_units = self.settings_manager.get_display_units()
-            volume_conversion = 1.0 if display_units == "metric" else LITERS_TO_GALLONS
+            vol_conv = 1.0 if display_units == "metric" else LITERS_TO_GALLONS
+            
             title = temp_vars['title'].get().strip()
+            if not title: messagebox.showerror("Error", "Title required."); return
+            if len(title) > 24: messagebox.showerror("Error", "Title max 24 chars."); return
             
-            if 'tare_entry_widget' in temp_vars: temp_vars['tare_entry_widget'].event_generate('<FocusOut>')
-            if 'total_entry_widget' in temp_vars: temp_vars['total_entry_widget'].event_generate('<FocusOut>')
-            
-            tare_kg = float(temp_vars['tare_weight_kg'].get())
-            total_kg = float(temp_vars['total_weight_kg'].get())
-            max_vol_l = float(temp_vars['max_volume_display'].get()) / volume_conversion
-            current_vol_display = temp_vars['current_volume_display'].get()
-            current_vol_l = float(current_vol_display) / volume_conversion 
-            start_vol_l = self.settings_manager._calculate_volume_from_weight(total_kg, tare_kg)
-            
-            # Map Beverage Name -> ID
+            # Resolve Beverage
             bev_name = temp_vars['beverage_name_var'].get()
-            if bev_name == "Empty":
-                bev_id = UNASSIGNED_BEVERAGE_ID
-            else:
-                beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
-                found = next((b for b in beverage_lib if b['name'] == bev_name), None)
-                bev_id = found['id'] if found else UNASSIGNED_BEVERAGE_ID
+            bev_id = UNASSIGNED_BEVERAGE_ID
+            if bev_name != "Empty":
+                lib = self.settings_manager.get_beverage_library().get('beverages', [])
+                found = next((b for b in lib if b['name'] == bev_name), None)
+                if found: bev_id = found['id']
 
-            # VALIDATION
-            if not title: 
-                messagebox.showerror("Input Error", "Keg Title cannot be empty.", parent=popup_window)
-                return
+            # Resolve Values
+            tare = float(temp_vars['tare_weight_kg'].get())
+            total = float(temp_vars['total_weight_kg'].get())
+            max_v = float(temp_vars['max_volume_display'].get()) / vol_conv
+            curr_display = float(temp_vars['current_volume_display'].get())
             
-            # 24 character limit check
-            if len(title) > 24: 
-                messagebox.showerror("Input Error", "Keg Title is limited to 24 characters.", parent=popup_window)
-                return
-
-            if not (tare_kg >= 0 and total_kg >= 0 and start_vol_l >= 0 and current_vol_l >= 0): 
-                messagebox.showerror("Input Error", "All weights and volumes must be non-negative.", parent=popup_window); return
-            if not (total_kg >= tare_kg):
-                messagebox.showerror("Input Error", "Starting Total Weight must be greater than or equal to Tare Weight.", parent=popup_window); return
-            if not (current_vol_l <= start_vol_l + 0.01): 
-                messagebox.showerror("Input Error", f"Current Volume ({current_vol_l:.2f} L) cannot be greater than Calculated Starting Volume ({start_vol_l:.2f} L).", parent=popup_window); return
-            if not (max_vol_l >= 0):
-                 messagebox.showerror("Input Error", "Maximum Full Volume must be non-negative.", parent=popup_window); return
-
-            current_dispensed_liters = start_vol_l - current_vol_l
-            existing_keg = self.settings_manager.get_keg_by_id(temp_vars['id'].get()) if not is_new else None
-            final_dispensed_to_save = current_dispensed_liters
-            final_pulses_to_save = 0 
-
-            if existing_keg:
-                TOLERANCE = 0.01 
-                starting_vol_changed = abs(existing_keg.get('calculated_starting_volume_liters', 0.0) - start_vol_l) > TOLERANCE
-                if not starting_vol_changed:
-                     final_dispensed_to_save = existing_keg.get('current_dispensed_liters', 0.0)
-                     final_pulses_to_save = existing_keg.get('total_dispensed_pulses', 0)
-
+            start_v = self.settings_manager._calculate_volume_from_weight(total, tare)
+            current_l = curr_display / vol_conv
+            dispensed = max(0.0, start_v - current_l)
+            
+            # Build Dict
             new_data = {
-                "id": temp_vars['id'].get(), 
-                "title": title, 
-                "tare_weight_kg": tare_kg, 
-                "starting_total_weight_kg": total_kg, 
-                "maximum_full_volume_liters": max_vol_l, 
-                "calculated_starting_volume_liters": start_vol_l, 
-                "current_dispensed_liters": final_dispensed_to_save,
-                "total_dispensed_pulses": final_pulses_to_save,
+                "id": temp_vars['id'].get(),
+                "title": title,
+                "tare_weight_kg": tare,
+                "starting_total_weight_kg": total,
+                "maximum_full_volume_liters": max_v,
+                "calculated_starting_volume_liters": start_v,
+                "current_dispensed_liters": dispensed,
+                "total_dispensed_pulses": 0, # Reset if manually changing
                 "beverage_id": bev_id,
-                "fill_date": "" 
+                "fill_date": ""
             }
             
-            keg_list = self.settings_manager.get_keg_definitions()
-            if is_new: keg_list.append(new_data)
+            # Preserve existing pulses if volume didn't change drastically
+            if not is_new:
+                old = temp_vars['original_keg_data']
+                if abs(old.get('calculated_starting_volume_liters', 0) - start_v) < 0.1:
+                    new_data['total_dispensed_pulses'] = old.get('total_dispensed_pulses', 0)
+                    # If we didn't touch current volume manually, keep precise dispensed
+                    if abs(old.get('current_dispensed_liters', 0) - dispensed) < 0.1:
+                         new_data['current_dispensed_liters'] = old.get('current_dispensed_liters', 0)
+
+            # Save
+            kegs = self.settings_manager.get_keg_definitions()
+            if is_new:
+                kegs.append(new_data)
             else:
-                found = False
-                for i, k in enumerate(keg_list):
-                    if k.get('id') == new_data['id']: 
-                        keg_list[i] = new_data; 
-                        found = True; 
+                for i, k in enumerate(kegs):
+                    if k['id'] == new_data['id']:
+                        kegs[i] = new_data
                         break
-                if not found: messagebox.showerror("Save Error", "Could not find the original keg to update.", parent=popup_window); return
-
-            sorted_list = sorted(keg_list, key=lambda k: k.get('title', '').lower())
-            self.settings_manager.save_keg_definitions(sorted_list)
+                        
+            self.settings_manager.save_keg_definitions(kegs)
             
-            if hasattr(self, 'sensor_logic') and self.sensor_logic and not self.sensor_logic.is_paused: 
-                self.sensor_logic.force_recalculation()
-            
-            self._populate_keg_dropdowns(); 
-            popup_window.destroy()
-            
-            # --- PERSISTENCE FIX ---
-            # Do NOT destroy parent_popup. Just refresh it.
-            if parent_popup and parent_popup.winfo_exists():
-                 self._populate_keg_settings_list(parent_popup)
-            
-            print(f"UIManager: Keg '{title}' saved successfully.")
-
-        except ValueError as e:
-            messagebox.showerror("Input Error", f"Invalid number input. {e}", parent=popup_window)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error saving keg: {e}", parent=popup_window)
-
-    def _delete_keg_definition(self, keg_id, keg_title, parent_popup):
-        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the keg '{keg_title}'? This will also re-assign any taps currently linked to it.", parent=parent_popup): return
-            
-        success, message = self.settings_manager.delete_keg_definition(keg_id)
-        
-        if success:
-            # CRITICAL: Reload initial volumes in SensorLogic
-            if hasattr(self, 'sensor_logic') and self.sensor_logic and not self.sensor_logic.is_paused: 
-                self.sensor_logic.force_recalculation()
-                
+            # Refresh Logic
+            if self.sensor_logic: self.sensor_logic.force_recalculation()
             self._populate_keg_dropdowns()
-            self._refresh_ui_for_settings_or_resume() 
-
-            # --- PERSISTENCE FIX ---
-            # Do NOT destroy parent_popup. Just refresh it.
-            if self.settings_manager.get_keg_definitions(): 
-                self._populate_keg_settings_list(parent_popup)
-            else: 
-                # If empty, we can still show the empty list (or close if you prefer, but persistence suggests keeping it open)
-                self._populate_keg_settings_list(parent_popup)
-                messagebox.showinfo("Keg Library Empty", "The Keg Library is now empty.", parent=self.root)
-        else:
-            messagebox.showerror("Delete Error", message, parent=parent_popup)
-
+            self._refresh_ui_for_settings_or_resume()
+            
+            # Restore List
+            self._show_keg_list_view(parent_frame)
+            
+        except ValueError:
+            messagebox.showerror("Error", "Invalid numeric input.")
+            
+    def _delete_keg_from_view(self, parent_frame, keg_data):
+        if messagebox.askyesno("Confirm", f"Delete keg '{keg_data.get('title')}'?"):
+            self.settings_manager.delete_keg_definition(keg_data['id'])
+            
+            # Refresh Logic
+            if self.sensor_logic: self.sensor_logic.force_recalculation()
+            self._populate_keg_dropdowns()
+            self._refresh_ui_for_settings_or_resume()
+            
+            # Restore List
+            self._show_keg_list_view(parent_frame)
+    
     # --- Flow Sensor Calibration Popup (NEW LIST VIEW) ---
     def _open_flow_calibration_popup(self, initial_tab_index=0, initial_tap_index=None, initial_keg_title=None):
          popup = tk.Toplevel(self.root)
