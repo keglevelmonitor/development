@@ -286,14 +286,11 @@ class SetupWizard:
         # 1. Taps
         ttk.Label(form_frame, text="Number of Taps:", font=('TkDefaultFont', 12)).grid(row=0, column=0, pady=10, sticky="e", padx=10)
         
-        # Use 'self.' to prevent garbage collection of the StringVar
         default_taps = str(self.wizard_data.get('taps', 3))
         self.taps_var = tk.StringVar(value=default_taps)
         
         taps_spin = ttk.Spinbox(form_frame, from_=1, to=10, textvariable=self.taps_var, width=5, font=('TkDefaultFont', 12))
         taps_spin.grid(row=0, column=1, pady=10, sticky="w")
-        
-        # Force value directly to widget to be double-sure
         taps_spin.set(default_taps)
         
         # 2. Units
@@ -302,16 +299,14 @@ class SetupWizard:
         units_frame = ttk.Frame(form_frame)
         units_frame.grid(row=1, column=1, pady=10, sticky="w")
         
-        # Use 'self.' for persistence
         self.units_var = tk.StringVar(value=self.wizard_data['units'])
         
         ttk.Radiobutton(units_frame, text="Metric (Liters / Kg / °C)", variable=self.units_var, value="metric").pack(anchor="w", pady=5)
         ttk.Radiobutton(units_frame, text="Imperial (Gallons / Lb / °F)", variable=self.units_var, value="imperial").pack(anchor="w", pady=5)
         
-        # 3. Temperature Sensor (Scanning logic included here)
+        # 3. Temperature Sensor
         ttk.Label(form_frame, text="Temperature Sensor:", font=('TkDefaultFont', 12)).grid(row=2, column=0, pady=10, sticky="e", padx=10)
         
-        # Perform scan
         sensors = []
         try:
             base_dir = '/sys/bus/w1/devices/'
@@ -319,66 +314,59 @@ class SetupWizard:
             sensors = [os.path.basename(f) for f in device_folders]
         except: pass
         
-        # Use 'self.' for persistence
         self.sensor_var = tk.StringVar()
         
         if not sensors:
-            # Case 0: None
             ttk.Label(form_frame, text="<None Detected>", foreground="red", font=('TkDefaultFont', 11)).grid(row=2, column=1, pady=10, sticky="w")
             self.wizard_data['temp_sensor'] = "unassigned"
             self.sensor_var.set("unassigned") 
         elif len(sensors) == 1:
-            # Case 1: Auto-assign
             single_id = sensors[0]
             ttk.Label(form_frame, text=f"<{single_id}>", foreground="green", font=('TkDefaultFont', 11, 'bold')).grid(row=2, column=1, pady=10, sticky="w")
             self.wizard_data['temp_sensor'] = single_id
             self.sensor_var.set(single_id)
         else:
-            # Case >1: Dropdown
             sensor_dropdown = ttk.Combobox(form_frame, textvariable=self.sensor_var, values=sensors, state="readonly", width=20)
             sensor_dropdown.grid(row=2, column=1, pady=10, sticky="w")
-            # Default to first
             if not self.wizard_data['temp_sensor'] or self.wizard_data['temp_sensor'] == "unassigned":
                  self.sensor_var.set(sensors[0])
             else:
                  self.sensor_var.set(self.wizard_data['temp_sensor'])
 
-        # 4. Force Num Lock (NEW)
-        # Only show on Raspberry Pi hardware to avoid confusion on PC dev
+        current_row = 3
+
+        # 4. Force Num Lock
         if IS_RASPBERRY_PI_MODE:
             self.numlock_var = tk.BooleanVar(value=self.wizard_data.get('numlock', True))
             nl_chk = ttk.Checkbutton(form_frame, text="Force Num Lock ON while app is running", variable=self.numlock_var)
-            nl_chk.grid(row=3, column=0, columnspan=2, pady=15, sticky="w", padx=10)
+            nl_chk.grid(row=current_row, column=0, columnspan=2, pady=(15, 5), sticky="w", padx=10)
+            current_row += 1
+
+        # 5. Enable Pour Log (NEW)
+        self.enable_log_var = tk.BooleanVar(value=True)
+        log_chk = ttk.Checkbutton(form_frame, text="Enable Pour Log", variable=self.enable_log_var)
+        log_chk.grid(row=current_row, column=0, columnspan=2, pady=5, sticky="w", padx=10)
 
         # Buttons
         btn_frame = ttk.Frame(self.content_frame)
         btn_frame.pack(fill="x", side="bottom", pady=10)
         
         def on_next():
-            # Robust Tap Input Handling
             try:
-                # Read from widget first
                 val = taps_spin.get().strip()
-                if not val:
-                    val = self.taps_var.get().strip()
-                
-                if not val:
-                    taps_val = 3
-                else:
-                    taps_val = int(val)
-                    taps_val = max(1, min(10, taps_val))
+                if not val: val = self.taps_var.get().strip()
+                taps_val = 3 if not val else max(1, min(10, int(val)))
             except ValueError:
                 taps_val = 3 
                 
             self.wizard_data['taps'] = taps_val
             self.wizard_data['units'] = self.units_var.get()
             
-            if len(sensors) > 1:
-                self.wizard_data['temp_sensor'] = self.sensor_var.get()
+            if len(sensors) > 1: self.wizard_data['temp_sensor'] = self.sensor_var.get()
+            if IS_RASPBERRY_PI_MODE: self.wizard_data['numlock'] = self.numlock_var.get()
             
-            # Save Num Lock state if on Pi
-            if IS_RASPBERRY_PI_MODE:
-                self.wizard_data['numlock'] = self.numlock_var.get()
+            # Save log setting to wizard data
+            self.wizard_data['enable_pour_log'] = self.enable_log_var.get()
             
             self._next_step()
             
@@ -402,11 +390,14 @@ class SetupWizard:
         # 4. Temp Sensor
         self.settings_manager.set_ds18b20_ambient_sensor(self.wizard_data['temp_sensor'])
         
-        # 5. Num Lock (NEW)
+        # 5. Num Lock
         if IS_RASPBERRY_PI_MODE:
             self.settings_manager.save_force_numlock(self.wizard_data['numlock'])
+            
+        # 6. Enable Pour Log (NEW)
+        self.settings_manager.save_enable_pour_log(self.wizard_data.get('enable_pour_log', True))
         
-        # 6. Set Flag
+        # 7. Set Flag
         self.settings_manager.set_setup_complete(True)
         
         messagebox.showinfo("Setup Complete", "Configuration saved! Launching application...", parent=self.root)

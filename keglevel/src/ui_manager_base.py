@@ -414,7 +414,9 @@ class MainUIBase:
             self.metadata_frame_refs[i]['lite'] = lite_meta_frame
 
             # B. Full Mode Metadata (Gray Box)
-            METADATA_HEIGHT = 160 
+            # --- MODIFICATION: Reduced Fixed Height to 220 ---
+            METADATA_HEIGHT = 220
+            # pack_propagate(False) ensures this frame stays exactly 220px tall
             full_meta_container = ttk.Frame(column_frame, height=METADATA_HEIGHT, style='LightGray.TFrame') 
             full_meta_container.pack_propagate(False) 
             
@@ -438,14 +440,16 @@ class MainUIBase:
             ttk.Label(fm_abv, text="ABV:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
 
             # Row 2: Description
+            # Added padding to keep text away from edges
             description_label = ttk.Label(full_meta_inner, textvariable=self.beverage_metadata_texts[i]['description'], 
                                           anchor='nw', font=('TkDefaultFont', 11, 'italic'), justify=tk.LEFT,
-                                          wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0') 
+                                          wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0', padding=(10, 5)) 
             description_label.pack(anchor="w", fill="both", expand=True, pady=(5, 5))
             
             # Use dynamic wrapping for description based on column width
             def resize_desc_wrap(event, lbl=description_label):
-                lbl.config(wraplength=event.width - 10)
+                # Adjust wrap length to account for padding
+                lbl.config(wraplength=event.width - 25)
             full_meta_container.bind("<Configure>", resize_desc_wrap)
 
             self.metadata_frame_refs[i]['full'] = full_meta_container
@@ -490,6 +494,186 @@ class MainUIBase:
         notification_label_container.pack(side="bottom", fill="x", padx=10, pady=(5,5))
         self.notification_status_label = ttk.Label(notification_label_container, textvariable=self.notification_status_text, anchor="w", relief="sunken", padding=(5,2))
         self.notification_status_label.pack(fill='both', expand=True)
+
+    # def _create_widgets(self):
+        # s = self._define_progressbar_styles()
+        # s.configure('Tap.Bold.TLabel', font=('TkDefaultFont', 10, 'bold'))
+        # s.configure('Metadata.Bold.TLabel', font=('TkDefaultFont', 9, 'bold'))
+        # s.configure('LightGray.TFrame', background='#F0F0F0')
+        
+        # # --- 1. HEADER (PACKED) ---
+        # self.header_frame = ttk.Frame(self.root)
+        # self.header_frame.pack(side="top", fill="x", padx=10, pady=(10,0), anchor="n")
+        
+        # action_buttons_frame = ttk.Frame(self.header_frame)
+        # action_buttons_frame.pack(side="right", padx=0, pady=0)
+        
+        # self.settings_menubutton = ttk.Menubutton(action_buttons_frame, text="Settings", width=12)
+        # default_font = tkfont.nametofont("TkMenuFont")
+        # self.menu_heading_font = tkfont.Font(family=default_font['family'], size=default_font['size'], weight="bold")
+        # self.settings_menu = tk.Menu(self.settings_menubutton, tearoff=0, disabledforeground="black")
+        # self.settings_menubutton["menu"] = self.settings_menu
+        # self.settings_menubutton.pack(side="right", padx=(0, 0), pady=0) 
+
+        # # Temperature Display
+        # temp_label_container = ttk.Frame(self.header_frame, width=120, height=26)
+        # temp_label_container.pack_propagate(False)
+        # temp_label_container.pack(side="right", padx=(0, 10), pady=0)
+        # self.temperature_label = ttk.Label(temp_label_container, textvariable=self.temperature_text, relief="sunken", padding=(5, 2), anchor=tk.W)
+        # self.temperature_label.pack(fill='both', expand=True)
+        
+        # # --- 2. MAIN CONTENT CONTAINER (VERTICAL SCROLLABLE CANVAS) ---
+        # # Changed to Vertical scrollbar to support wrapping rows
+        # self.tap_container_frame = ttk.Frame(self.root)
+        # self.tap_container_frame.pack(side="top", fill="both", expand=True, padx=10, pady=(20, 0))
+        
+        # # Vertical Scrollbar (Right Side)
+        # self.v_scrollbar = ttk.Scrollbar(self.tap_container_frame, orient="vertical")
+        # self.v_scrollbar.pack(side="right", fill="y")
+        
+        # # Canvas
+        # self.tap_canvas = tk.Canvas(self.tap_container_frame, yscrollcommand=self.v_scrollbar.set, highlightthickness=0)
+        # self.tap_canvas.pack(side="left", fill="both", expand=True)
+        
+        # self.v_scrollbar.config(command=self.tap_canvas.yview)
+        
+        # # Internal Frame for Taps (Grid Layout)
+        # self.main_columns_frame = ttk.Frame(self.tap_canvas)
+        
+        # # Create Window in Canvas
+        # self.canvas_window_id = self.tap_canvas.create_window((0, 0), window=self.main_columns_frame, anchor="nw")
+        
+        # # --- DYNAMIC RESIZING EVENTS ---
+        # def on_frame_configure(event):
+            # """Reset the scroll region to encompass the inner frame"""
+            # self.tap_canvas.configure(scrollregion=self.tap_canvas.bbox("all"))
+
+        # def on_canvas_configure(event):
+            # """
+            # When the canvas width changes (user resize), resize the inner frame 
+            # to match and trigger a reflow of the grid.
+            # """
+            # if self.tap_canvas.winfo_width() != self.main_columns_frame.winfo_reqwidth():
+                # self.tap_canvas.itemconfig(self.canvas_window_id, width=event.width)
+                
+            # # Trigger Reflow Logic based on new width
+            # self._reflow_layout(event.width)
+
+        # self.main_columns_frame.bind("<Configure>", on_frame_configure)
+        # self.tap_canvas.bind("<Configure>", on_canvas_configure)
+
+        # # --- TAP COLUMN CREATION LOOP ---
+        # WRAPLENGTH_TAP_COLUMN = 250 
+        
+        # for i in range(self.num_sensors):
+            # column_frame = ttk.Frame(self.main_columns_frame, padding=(3,3), relief="groove")
+            # self.sensor_column_frames[i] = column_frame
+            
+            # # Note: Grid placement now happens in _reflow_layout, not here.
+            
+            # # 1. Header: "Tap X" + Dropdown
+            # header_subframe = ttk.Frame(column_frame)
+            # header_subframe.pack(fill="x", pady=(0, 2))
+            
+            # ttk.Label(header_subframe, text=f"Tap {i + 1}:", style='Tap.Bold.TLabel').pack(side="left", padx=(0, 5))
+            
+            # keg_dropdown = ttk.Combobox(header_subframe, textvariable=self.sensor_keg_selection_vars[i], state="readonly")
+            # keg_dropdown.pack(side="left", fill="x", expand=True)
+            # keg_dropdown.bind("<<ComboboxSelected>>", lambda event, idx=i: self._handle_keg_selection_change(idx))
+            # keg_dropdown.bind("<Button-1>", self._on_combobox_click)
+            # self.sensor_keg_dropdowns[i] = keg_dropdown
+
+            # # --- DYNAMIC METADATA SECTIONS ---
+            # self.metadata_frame_refs[i] = {}
+
+            # # A. Lite Mode Metadata (Single Line)
+            # lite_meta_frame = ttk.Frame(column_frame)
+            
+            # ttk.Label(lite_meta_frame, text="ABV:", style='Metadata.Bold.TLabel').pack(side="left", padx=(0, 2))
+            # ttk.Label(lite_meta_frame, textvariable=self.beverage_metadata_texts[i]['abv']).pack(side="left", anchor="w")
+            
+            # ttk.Label(lite_meta_frame, textvariable=self.beverage_metadata_texts[i]['ibu']).pack(side="right", anchor="e")
+            # ttk.Label(lite_meta_frame, text="IBU:", style='Metadata.Bold.TLabel').pack(side="right", padx=(5, 2))
+            
+            # self.metadata_frame_refs[i]['lite'] = lite_meta_frame
+
+            # # B. Full Mode Metadata (Gray Box)
+            # METADATA_HEIGHT = 160 
+            # full_meta_container = ttk.Frame(column_frame, height=METADATA_HEIGHT, style='LightGray.TFrame') 
+            # full_meta_container.pack_propagate(False) 
+            
+            # full_meta_inner = ttk.Frame(full_meta_container, padding=(5, 5), style='LightGray.TFrame') 
+            # full_meta_inner.pack(fill="both", expand=True) 
+            
+            # # Row 1: BJCP, ABV, IBU
+            # fm_row1 = ttk.Frame(full_meta_inner, style='LightGray.TFrame')
+            # fm_row1.pack(anchor="w", fill="x")
+            
+            # ttk.Label(fm_row1, text="BJCP:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="left", padx=(0, 2))
+            # ttk.Label(fm_row1, textvariable=self.beverage_metadata_texts[i]['bjcp'], background='#F0F0F0').pack(side="left", padx=(0, 10), anchor='w')
+
+            # # Right aligned ABV/IBU
+            # fm_ibu = ttk.Frame(fm_row1, style='LightGray.TFrame'); fm_ibu.pack(side="right", anchor='e')
+            # ttk.Label(fm_ibu, textvariable=self.beverage_metadata_texts[i]['ibu'], anchor='e', background='#F0F0F0').pack(side="right")
+            # ttk.Label(fm_ibu, text="IBU:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
+            
+            # fm_abv = ttk.Frame(fm_row1, style='LightGray.TFrame'); fm_abv.pack(side="right", anchor='e', padx=(10, 10)) 
+            # ttk.Label(fm_abv, textvariable=self.beverage_metadata_texts[i]['abv'], anchor='e', background='#F0F0F0').pack(side="right")
+            # ttk.Label(fm_abv, text="ABV:", style='Metadata.Bold.TLabel', background='#F0F0F0').pack(side="right", padx=(0, 2))
+
+            # # Row 2: Description
+            # description_label = ttk.Label(full_meta_inner, textvariable=self.beverage_metadata_texts[i]['description'], 
+                                          # anchor='nw', font=('TkDefaultFont', 11, 'italic'), justify=tk.LEFT,
+                                          # wraplength=WRAPLENGTH_TAP_COLUMN, background='#F0F0F0') 
+            # description_label.pack(anchor="w", fill="both", expand=True, pady=(5, 5))
+            
+            # # Use dynamic wrapping for description based on column width
+            # def resize_desc_wrap(event, lbl=description_label):
+                # lbl.config(wraplength=event.width - 10)
+            # full_meta_container.bind("<Configure>", resize_desc_wrap)
+
+            # self.metadata_frame_refs[i]['full'] = full_meta_container
+
+            # # 3. Progress Bar
+            # pb = ttk.Progressbar(column_frame, orient="horizontal", mode="determinate", maximum=100, style="default.Horizontal.TProgressbar")
+            # pb.pack(pady=(10,5), fill='x', expand=False)
+            # self.sensor_progressbars[i] = pb
+            
+            # # 4. Measurements
+            # # A. Flow Rate
+            # lidar_frame = ttk.Frame(column_frame); lidar_frame.pack(anchor="w", fill="x", pady=1)
+            # lbl_title = ttk.Label(lidar_frame, textvariable=self.flow_rate_label_texts[i])
+            # lbl_title.pack(side="left", padx=(0, 2))
+            # self.flow_rate_label_widgets.append(lbl_title)
+            # lbl_val = ttk.Label(lidar_frame, textvariable=self.flow_rate_value_texts[i], anchor="w")
+            # lbl_val.pack(side="left", padx=(0,0)) 
+            # self.flow_rate_value_labels.append(lbl_val)
+            
+            # # B. Last Pour
+            # pour_track_frame = ttk.Frame(column_frame); pour_track_frame.pack(anchor="w", fill="x", pady=1)
+            # lbl_pour_title = ttk.Label(pour_track_frame, textvariable=self.last_pour_label_texts[i])
+            # lbl_pour_title.pack(side="left", padx=(0, 2))
+            # self.last_pour_label_widgets.append(lbl_pour_title)
+            # lbl_pour_val = ttk.Label(pour_track_frame, textvariable=self.last_pour_value_texts[i], anchor="w")
+            # lbl_pour_val.pack(side="left", padx=(0,0))
+            # self.last_pour_value_labels.append(lbl_pour_val)
+            
+            # # C. Volume Remaining
+            # vol1_frame = ttk.Frame(column_frame); vol1_frame.pack(anchor="w", fill="x", pady=1)
+            # ttk.Label(vol1_frame, textvariable=self.volume1_label_texts[i]).pack(side="left", padx=(0, 2))
+            # ttk.Label(vol1_frame, textvariable=self.volume1_value_texts[i], anchor="w").pack(side="left", padx=(0,0))
+            
+            # # D. Pours Remaining
+            # vol2_frame = ttk.Frame(column_frame); vol2_frame.pack(anchor="w", fill="x", pady=1)
+            # ttk.Label(vol2_frame, textvariable=self.volume2_label_texts[i]).pack(side="left", padx=(0, 2))
+            # ttk.Label(vol2_frame, textvariable=self.volume2_value_texts[i], anchor="w").pack(side="left", padx=(0,0))
+            
+        # # --- 4. Bottom Status Bar (PACKED) ---
+        # notification_label_container = ttk.Frame(self.root, height=26)
+        # notification_label_container.pack_propagate(False)
+        # notification_label_container.pack(side="bottom", fill="x", padx=10, pady=(5,5))
+        # self.notification_status_label = ttk.Label(notification_label_container, textvariable=self.notification_status_text, anchor="w", relief="sunken", padding=(5,2))
+        # self.notification_status_label.pack(fill='both', expand=True)
 
     def _reflow_layout(self, width, force=False):
         """

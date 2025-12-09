@@ -41,6 +41,13 @@ class InventoryManager:
         self.columns = self._get_default_workflow_data()['columns']
         self._load_workflow_data()
         
+    def refresh_beverages(self):
+        """
+        Lightweight refresh: Reloads only the beverage library from memory.
+        Does NOT reload workflow data from disk.
+        """
+        self.beverage_library, self.beverage_map = self._load_beverage_library_from_settings()    
+        
     def _load_beverage_library_from_settings(self):
         """Loads the beverage library from the SettingsManager instance."""
         # Use the settings manager passed during initialization, which holds the current data.
@@ -289,20 +296,13 @@ class ProcessFlowApp:
         self.view_mode = mode
         self.settings_manager.save_workflow_view_mode(mode)
         
-        # Rebuild the UI
         self._create_widgets()
-        # Refresh the data in the new widgets
-        self._refresh_all_columns()
-        
+        self._refresh_columns() # Refresh All
+
     def run(self):
         """Finalizes setup when hosted by UIManager."""
-        # This is where we run the first refresh and apply grab_set.
-        
-        # REMOVED: self.popup.grab_set() 
-        # Removing grab_set() allows interaction with the main UI.
-        
         self.popup.focus_set()
-        self._refresh_all_columns()
+        self._refresh_columns() # Refresh All
 
     def _setup_styles(self):
         s = ttk.Style(self.popup)
@@ -460,15 +460,19 @@ class ProcessFlowApp:
 
     def _handle_add_button(self, col_name):
         """Handles clicking the 'Add V' button next to the column title."""
-        selected_name = self.column_comboboxes[col_name].get() 
+        selected_name = self.column_combobox_vars[col_name].get() 
         
         if selected_name in self.name_to_id_map:
             item_id = self.name_to_id_map[selected_name]
-            
             if self.manager.add_item_to_column(item_id, col_name):
-                print(f"Workflow: Added '{selected_name}' to '{col_name}'.")
-                self._refresh_all_columns()
-            
+                # Optimize: Refresh ONLY the target column
+                self._refresh_columns([col_name])
+                
+                # --- NEW: Reset the dropdown after successful add ---
+                self.column_combobox_vars[col_name].set("-- Add Beverage --")
+                if col_name in self.column_comboboxes:
+                    self.column_comboboxes[col_name].selection_clear()
+                # ----------------------------------------------------
         else:
             # Show a simple error since the validation is done client-side
             messagebox.showwarning("Selection Required", "Please select a beverage from the dropdown list.", parent=self.popup)
@@ -486,39 +490,47 @@ class ProcessFlowApp:
             except Exception as e:
                 messagebox.showerror("Error", f"An error occurred during reset: {e}", parent=self.popup)
 
-    def _refresh_all_columns(self):
-        # When refreshing, reload the inventory manager to pick up any changes 
-        # (e.g., if the main app modified the beverage list file).
-        self.manager = InventoryManager(self.settings_manager, self.base_dir) 
+    def _refresh_columns(self, columns_to_update=None):
+        """
+        Refreshes the UI for specific columns. 
+        If columns_to_update is None, refreshes ALL columns (default behavior).
+        """
+        # 1. Lightweight refresh of beverage data from memory
+        self.manager.refresh_beverages()
         
-        # After reloading the manager (which reloads the library), update the dropdown values
+        # 2. Update cached beverage lists (Fast)
         self.all_beverages = self.manager.beverage_library
         self.beverage_names = sorted([b.get('name', 'Untitled') for b in self.all_beverages if b.get('id')])
         self.beverage_names.insert(0, "-- Add Beverage --")
         self.name_to_id_map = {b['name']: b['id'] for b in self.all_beverages if 'id' in b and 'name' in b}
 
-        for col_name in self.column_names:
-            # Update the Combobox values for this column
+        # 3. Determine which columns to target
+        targets = columns_to_update if columns_to_update else self.column_names
+
+        # 4. Redraw ONLY the target columns
+        for col_name in targets:
+            # Update Dropdown values
             if col_name in self.column_comboboxes:
                  self.column_comboboxes[col_name]['values'] = self.beverage_names
-                 # Keep the selected item in the box after refresh if it's a valid beverage
                  current_value = self.column_comboboxes[col_name].get()
                  if current_value not in self.name_to_id_map:
                     self.column_combobox_vars[col_name].set("-- Add Beverage --")
 
-
-            inner_frame = self.inner_frames[col_name]
-            
-            for widget in inner_frame.winfo_children():
-                widget.destroy()
+            # Rebuild Beverage Cards
+            if col_name in self.inner_frames:
+                inner_frame = self.inner_frames[col_name]
                 
-            item_list = self.manager.columns[col_name]
-            
-            for index, item_id in enumerate(item_list):
-                beverage_data = self.manager.get_beverage_data(item_id)
-                self._create_beverage_item_widget(inner_frame, col_name, item_id, beverage_data, index)
-                
-            self.inner_frames[col_name].update_idletasks()
+                # Clear old widgets in this column
+                for widget in inner_frame.winfo_children():
+                    widget.destroy()
+                    
+                # Recreate widgets for this column
+                item_list = self.manager.columns[col_name]
+                for index, item_id in enumerate(item_list):
+                    beverage_data = self.manager.get_beverage_data(item_id)
+                    self._create_beverage_item_widget(inner_frame, col_name, item_id, beverage_data, index)
+                    
+                inner_frame.update_idletasks()
 
     def _create_beverage_item_widget(self, parent_frame, col_name, item_id, data, index):
         # Item frame background is set to the lighter gray: #EAEAEA
@@ -596,27 +608,56 @@ class ProcessFlowApp:
                   background="#EAEAEA", 
                   wraplength=200).grid(row=0, column=1, sticky='w')
         
-        # --- Condensing Control Buttons (Horizontal Layout) ---
+        # --- Condensing Control Buttons (2x2 Grid Layout) ---
         button_inner_frame = ttk.Frame(button_frame)
         button_inner_frame.pack(expand=True, fill='y') 
         
+        # Row 0: Up (Left) | Advance (Right)
         ttk.Button(button_inner_frame, text="▲", style="Condensed.TButton", 
-                   command=lambda c=col_name, i_id=item_id: self._handle_move(c, i_id, -1)).pack(side='left', padx=1, pady=0)
+                   command=lambda c=col_name, i_id=item_id: self._handle_move(c, i_id, -1)).grid(row=0, column=0, padx=1, pady=1, sticky="ew")
         
+        # Only show Advance if NOT in the last column
+        if col_name != "lagering_or_finishing":
+             ttk.Button(button_inner_frame, text="▶", style="Condensed.TButton", 
+                   command=lambda c=col_name, i_id=item_id: self._handle_advance(c, i_id)).grid(row=0, column=1, padx=1, pady=1, sticky="ew")
+
+        # Row 1: Down (Left) | Remove (Right)
         ttk.Button(button_inner_frame, text="▼", style="Condensed.TButton", 
-                   command=lambda c=col_name, i_id=item_id: self._handle_move(c, i_id, 1)).pack(side='left', padx=1, pady=0)
+                   command=lambda c=col_name, i_id=item_id: self._handle_move(c, i_id, 1)).grid(row=1, column=0, padx=1, pady=1, sticky="ew")
 
         ttk.Button(button_inner_frame, text="x", style="Condensed.TButton", 
-                   command=lambda c=col_name, i_id=item_id: self._handle_remove(i_id, c)).pack(side='left', padx=1, pady=0)
-
+                   command=lambda c=col_name, i_id=item_id: self._handle_remove(i_id, c)).grid(row=1, column=1, padx=1, pady=1, sticky="ew")
 
     def _handle_add(self, item_id, target_col):
         pass
             
     def _handle_remove(self, item_id, col_name):
         if self.manager.remove_item_from_column(item_id, col_name):
-            self._refresh_all_columns()
+            # Optimize: Refresh ONLY the target column
+            self._refresh_columns([col_name])
 
     def _handle_move(self, col_name, item_id, direction):
         if self.manager.move_item(col_name, item_id, direction):
-            self._refresh_all_columns()
+            # Optimize: Refresh ONLY the target column
+            self._refresh_columns([col_name])
+
+    def _handle_advance(self, col_name, item_id):
+        """
+        Moves or copies an item to the next stage in the workflow.
+        """
+        if col_name == "on_rotation":
+            # COPY to "on_deck" -> Only "on_deck" changes visually
+            if self.manager.add_item_to_column(item_id, "on_deck"):
+                self._refresh_columns(["on_deck"])
+                
+        elif col_name == "on_deck":
+            # MOVE to "fermenting" -> Both columns change
+            if self.manager.add_item_to_column(item_id, "fermenting"):
+                self.manager.remove_item_from_column(item_id, "on_deck")
+                self._refresh_columns(["on_deck", "fermenting"])
+                
+        elif col_name == "fermenting":
+            # MOVE to "lagering" -> Both columns change
+            if self.manager.add_item_to_column(item_id, "lagering_or_finishing"):
+                self.manager.remove_item_from_column(item_id, "fermenting")
+                self._refresh_columns(["fermenting", "lagering_or_finishing"])

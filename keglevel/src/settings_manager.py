@@ -112,10 +112,21 @@ class SettingsManager:
             "notify_on_update": True,
             "setup_complete": False,
             "workflow_view_mode": "paged",
-            # --- NEW: Workflow Window Geometry ---
-            "workflow_window_geometry": None
-            # -------------------------------------
+            "workflow_window_geometry": None,
+            # --- NEW: Pour Log Enable ---
+            "enable_pour_log": True
         }
+
+    # --- NEW METHODS for Pour Log ---
+    def get_enable_pour_log(self):
+        return self.settings.get('system_settings', {}).get('enable_pour_log', True)
+
+    def save_enable_pour_log(self, is_enabled):
+        sys_set = self.settings.get('system_settings', self._get_default_system_settings())
+        sys_set['enable_pour_log'] = bool(is_enabled)
+        self.settings['system_settings'] = sys_set
+        self._save_all_settings()
+        print(f"SettingsManager: Enable Pour Log saved: {is_enabled}")
 
     # --- NEW METHODS for Workflow Window Geometry ---
     def get_workflow_window_geometry(self):

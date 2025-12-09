@@ -15,6 +15,7 @@ import sys
 import re
 import threading
 import webbrowser
+import csv
 from main import manage_autostart_file
 
 
@@ -903,6 +904,11 @@ class PopupManagerMixin:
         # --- 2. Utilities ---
         self.settings_menu.add_command(label="Utilities", font=self.menu_heading_font, state="disabled")
         self.settings_menu.add_command(label="KegLevel Workflow", command=self._open_workflow_popup)
+        
+        # --- RENAMED: Pour Log Menu Item ---
+        self.settings_menu.add_command(label="Pour Log", command=self._open_pour_log_popup)
+        # -----------------------------------
+        
         self.settings_menu.add_command(label="Temperature Log", command=self._open_temperature_log_popup)
         
         self.settings_menu.add_separator()
@@ -923,6 +929,224 @@ class PopupManagerMixin:
         
         self.settings_menu.add_command(label="EULA", command=lambda: self._open_eula_popup(is_launch=False))
         self.settings_menu.add_command(label="About...", command=self._open_about_popup)
+
+    def _open_pour_log_popup(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Pour Log")
+        
+        # --- RESIZE JIGGLE FIX ---
+        # 1. Disable resizing initially
+        popup.resizable(False, False)
+        
+        def jiggle_window(event):
+            if event.widget != popup: return
+            popup.unbind("<Map>")
+            
+            # Enable resizing now that window is visible
+            popup.resizable(True, True)
+            
+            def _step_1_move():
+                try:
+                    # Force update to get accurate coordinates
+                    popup.update_idletasks()
+                    x = popup.winfo_x()
+                    y = popup.winfo_y()
+                    w = popup.winfo_width()
+                    h = popup.winfo_height()
+                    
+                    popup._jiggle_restore_x = x
+                    popup._jiggle_restore_y = y
+                    
+                    # Move 1px right (Reduced from 10px)
+                    popup.geometry(f"{w}x{h}+{x+1}+{y}")
+                    
+                    # Schedule Step 2
+                    popup.after(100, _step_2_restore)
+                except Exception: pass
+
+            def _step_2_restore():
+                try:
+                    x = popup._jiggle_restore_x
+                    y = popup._jiggle_restore_y
+                    w = popup.winfo_width()
+                    h = popup.winfo_height()
+                    popup.geometry(f"{w}x{h}+{x}+{y}")
+                except Exception: pass
+
+            # Run Step 1 500ms after map
+            popup.after(500, _step_1_move)
+            
+        # Bind BEFORE showing the window to ensure we catch the event
+        popup.bind("<Map>", jiggle_window)
+        # -------------------------
+        
+        # Set initial geometry and show window (triggers <Map>)
+        self._center_popup(popup, 900, 600)
+
+        popup.transient(self.root)
+        popup.grab_set()
+
+        # --- 1. Load Data ---
+        log_file = os.path.join(self.settings_manager.get_data_dir(), "pour_log.csv")
+        log_data = []
+        
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    header = next(reader, None) # Skip header
+                    if header:
+                        # Load all rows and reverse order (Newest first)
+                        log_data = list(reader)
+                        log_data.reverse()
+            except Exception as e:
+                print(f"PourLog Error: Could not read log file: {e}")
+        
+        # --- Determine Units ---
+        display_units = self.settings_manager.get_display_units()
+        is_metric = (display_units == "metric")
+        
+        poured_unit_label = "ml" if is_metric else "oz"
+        remaining_unit_label = "L" if is_metric else "Gal"
+        
+        def convert_row(original_row):
+            # CSV: [Timestamp, Tap Name, Keg Title, Beverage, Vol Poured (L), Vol Rem (L), Duration]
+            if len(original_row) < 7: return original_row
+            
+            new_row = list(original_row)
+            
+            try:
+                vol_poured_l = float(new_row[4])
+                vol_rem_l_str = new_row[5]
+                vol_rem_l = float(vol_rem_l_str) if vol_rem_l_str != "--" else None
+                
+                # Convert Poured
+                if is_metric:
+                    poured_val = vol_poured_l * 1000.0
+                else:
+                    poured_val = vol_poured_l / OZ_TO_LITERS # Liters / 0.0295735 = oz
+                    
+                new_row[4] = f"{poured_val:.1f}"
+                
+                # Convert Remaining
+                if vol_rem_l is not None:
+                    if is_metric:
+                        rem_val = vol_rem_l
+                    else:
+                        rem_val = vol_rem_l * LITERS_TO_GALLONS
+                    new_row[5] = f"{rem_val:.2f}"
+                else:
+                    new_row[5] = "--"
+                    
+            except ValueError:
+                pass # Keep original string if parse fails
+                
+            return new_row
+
+        # --- 2. Setup Notebook (Tabs) ---
+        notebook = ttk.Notebook(popup)
+        notebook.pack(expand=True, fill="both", padx=10, pady=10)
+        
+        def create_log_tab(parent_notebook, tab_title, data_rows):
+            frame = ttk.Frame(parent_notebook)
+            parent_notebook.add(frame, text=tab_title)
+            
+            vsb = ttk.Scrollbar(frame, orient="vertical")
+            hsb = ttk.Scrollbar(frame, orient="horizontal")
+            
+            columns = ("time", "tap", "keg", "bev", "vol", "rem", "dur")
+            tree = ttk.Treeview(frame, columns=columns, show="headings", 
+                                yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            
+            vsb.config(command=tree.yview)
+            hsb.config(command=tree.xview)
+            
+            vsb.pack(side="right", fill="y")
+            hsb.pack(side="bottom", fill="x")
+            tree.pack(side="left", fill="both", expand=True)
+            
+            # --- HEADERS ---
+            tree.heading("time", text="Timestamp")
+            tree.heading("tap", text="Tap")
+            tree.heading("keg", text="Keg")
+            tree.heading("bev", text="Beverage")
+            tree.heading("vol", text=f"Poured ({poured_unit_label})")
+            tree.heading("rem", text=f"Remaining ({remaining_unit_label})")
+            tree.heading("dur", text="Seconds")
+            
+            # Columns Widths
+            tree.column("time", width=140, minwidth=140)
+            tree.column("tap", width=80, minwidth=80)
+            tree.column("keg", width=100, minwidth=80)
+            tree.column("bev", width=150, minwidth=100)
+            tree.column("vol", width=90, minwidth=60, anchor="e")
+            tree.column("rem", width=100, minwidth=60, anchor="e")
+            tree.column("dur", width=70, minwidth=60, anchor="e")
+            
+            # Populate Data
+            for row in data_rows:
+                converted_row = convert_row(row)
+                tree.insert("", "end", values=converted_row)
+                    
+            return tree
+
+        # --- Tab 1: All Taps ---
+        create_log_tab(notebook, "All Taps", log_data)
+        
+        # --- Tabs 2+: Individual Taps ---
+        displayed_taps = self.settings_manager.get_displayed_taps()
+        sensor_labels = self.settings_manager.get_sensor_labels()
+        
+        for i in range(displayed_taps):
+            default_label = f"Tap {i+1}"
+            
+            # Filter logic
+            current_custom_label = sensor_labels[i]
+            
+            tap_rows = [
+                r for r in log_data 
+                if len(r) > 1 and (r[1] == default_label or r[1] == current_custom_label)
+            ]
+            create_log_tab(notebook, f"Tap {i+1}", tap_rows)
+
+        # --- Footer ---
+        footer_frame = ttk.Frame(popup, padding="10")
+        footer_frame.pack(fill="x", side="bottom")
+        
+        # 1. Clear Log Button (Left)
+        def clear_log_action():
+            if messagebox.askokcancel("Confirm Clear", "This clears the entire log and cannot be undone.\n\nAre you sure?", parent=popup):
+                try:
+                    open(log_file, 'w').close() # Truncate file
+                    with open(log_file, 'w', newline='', encoding='utf-8') as f:
+                        csv.writer(f).writerow(["Timestamp", "Tap Name", "Keg Title", "Beverage Name", "Volume Poured (L)", "Volume Remaining (L)", "Duration (s)"])
+                    
+                    popup.grab_release()
+                    popup.destroy()
+                    self.root.after(100, self._open_pour_log_popup)
+                    
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to clear log: {e}", parent=popup)
+
+        ttk.Button(footer_frame, text="Clear Pour Log", command=clear_log_action).pack(side="left")
+
+        # 2. Enable Checkbox (Center-ish)
+        enable_var = tk.BooleanVar(value=self.settings_manager.get_enable_pour_log())
+        
+        def toggle_enable():
+            self.settings_manager.save_enable_pour_log(enable_var.get())
+            
+        ttk.Checkbutton(footer_frame, text="Enable pour log", variable=enable_var, command=toggle_enable).pack(side="left", padx=20)
+
+        # 3. Standard Buttons (Right)
+        ttk.Button(footer_frame, text="Close", command=popup.destroy).pack(side="right")
+        
+        def refresh_log():
+            popup.grab_release()
+            popup.destroy()
+            self.root.after(100, self._open_pour_log_popup)
+            
+        ttk.Button(footer_frame, text="Refresh", command=refresh_log).pack(side="right", padx=5)
 
     def _open_configuration_popup(self, initial_tab=0):
         """
@@ -3150,6 +3374,20 @@ class PopupManagerMixin:
                     
                     # Update status with user's units
                     status_label.config(text=f"Simulating {user_vol} {unit_label} on Tap {tap_idx+1} ({action_text})...", foreground="green")
+                    
+                    # --- AUTO-CLEAR LOGIC ---
+                    # Calculate duration in milliseconds: (Liters / (L/min)) * 60 * 1000
+                    duration_seconds = (vol_liters / rate) * 60
+                    duration_ms = int(duration_seconds * 1000)
+                    
+                    # Schedule clear with a 500ms buffer to ensure visual sync with backend completion
+                    def clear_msg():
+                        if dev_popup.winfo_exists():
+                            status_label.config(text="")
+                            
+                    dev_popup.after(duration_ms + 500, clear_msg)
+                    # ------------------------
+                    
                 else:
                      status_label.config(text="Sensor Logic not connected.", foreground="red")
                      
@@ -3355,6 +3593,114 @@ class PopupManagerMixin:
             
         except ValueError: messagebox.showerror("Input Error", "Port must be a valid number.", parent=popup_window)
         except Exception as e: messagebox.showerror("Error", f"An unexpected error occurred while saving: {e}", parent=popup_window)
+
+    def _open_tap_log_popup(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Tap Pour Log")
+        self._center_popup(popup, 900, 600)
+        popup.transient(self.root)
+        popup.grab_set()
+
+        # --- 1. Load Data ---
+        log_file = os.path.join(self.settings_manager.get_data_dir(), "pour_log.csv")
+        log_data = []
+        
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    header = next(reader, None) # Skip header
+                    if header:
+                        # Load all rows and reverse order (Newest first)
+                        log_data = list(reader)
+                        log_data.reverse()
+            except Exception as e:
+                print(f"TapLog Error: Could not read log file: {e}")
+        
+        # --- 2. Setup Notebook (Tabs) ---
+        notebook = ttk.Notebook(popup)
+        notebook.pack(expand=True, fill="both", padx=10, pady=10)
+        
+        # Function to create a treeview tab
+        def create_log_tab(parent_notebook, tab_title, data_rows):
+            frame = ttk.Frame(parent_notebook)
+            parent_notebook.add(frame, text=tab_title)
+            
+            # Scrollbars
+            vsb = ttk.Scrollbar(frame, orient="vertical")
+            hsb = ttk.Scrollbar(frame, orient="horizontal")
+            
+            # Treeview
+            columns = ("time", "tap", "keg", "bev", "vol", "rem", "dur")
+            tree = ttk.Treeview(frame, columns=columns, show="headings", 
+                                yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            
+            # Config Scrollbars
+            vsb.config(command=tree.yview)
+            hsb.config(command=tree.xview)
+            
+            vsb.pack(side="right", fill="y")
+            hsb.pack(side="bottom", fill="x")
+            tree.pack(side="left", fill="both", expand=True)
+            
+            # Headings
+            tree.heading("time", text="Timestamp")
+            tree.heading("tap", text="Tap Name")
+            tree.heading("keg", text="Keg Title")
+            tree.heading("bev", text="Beverage")
+            tree.heading("vol", text="Poured")
+            tree.heading("rem", text="Remaining")
+            tree.heading("dur", text="Duration")
+            
+            # Columns Widths
+            tree.column("time", width=140, minwidth=140)
+            tree.column("tap", width=100, minwidth=80)
+            tree.column("keg", width=100, minwidth=80)
+            tree.column("bev", width=150, minwidth=100)
+            tree.column("vol", width=80, minwidth=60, anchor="e")
+            tree.column("rem", width=80, minwidth=60, anchor="e")
+            tree.column("dur", width=80, minwidth=60, anchor="e")
+            
+            # Populate Data
+            for row in data_rows:
+                # Row format matches CSV: [Timestamp, Tap Name, Keg Title, Beverage, Vol Poured, Vol Rem, Duration]
+                if len(row) >= 7:
+                    tree.insert("", "end", values=row)
+                    
+            return tree
+
+        # --- Tab 1: All Taps ---
+        create_log_tab(notebook, "All Taps", log_data)
+        
+        # --- Tabs 2+: Individual Taps ---
+        displayed_taps = self.settings_manager.get_displayed_taps()
+        sensor_labels = self.settings_manager.get_sensor_labels()
+        
+        for i in range(displayed_taps):
+            # Determine names to match
+            current_label = sensor_labels[i]
+            default_label = f"Tap {i+1}"
+            
+            # Filter logic: Match either the current custom label OR the default "Tap N" label
+            # This helps find old logs even if the user recently renamed the tap.
+            tap_rows = [
+                r for r in log_data 
+                if len(r) > 1 and (r[1] == current_label or r[1] == default_label)
+            ]
+            
+            create_log_tab(notebook, f"Tap {i+1}", tap_rows)
+
+        # --- Footer ---
+        btn_frame = ttk.Frame(popup, padding="10")
+        btn_frame.pack(fill="x", side="bottom")
+        
+        ttk.Button(btn_frame, text="Close", command=popup.destroy).pack(side="right")
+        
+        def refresh_log():
+            popup.destroy()
+            self._open_tap_log_popup()
+            
+        ttk.Button(btn_frame, text="Refresh", command=refresh_log).pack(side="right", padx=5)
 
     def _execute_reset_log_and_refresh(self, popup_window):
         if messagebox.askyesno("Confirm Reset", "Are you sure you want to reset all temperature log data? This cannot be undone.", parent=popup_window):

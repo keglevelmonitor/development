@@ -4,6 +4,9 @@
 import time
 import threading
 import math
+import csv
+import os
+from datetime import datetime
 
 ''' GPIO PINOUT FOR REFERENCE
 Label ------------ Pin - Pin ------------ Label
@@ -141,9 +144,9 @@ class SensorLogic:
         self.active_sensor_index = -1 
         self.last_pulse_count = [0] * self.num_sensors
         
-        # --- NEW: Smart Flow & Last Pour Tracking ---
+        # --- Smart Flow & Last Pour Tracking ---
         self.last_pour_averages = self.settings_manager.get_last_pour_averages()
-        self.last_pour_volumes = self.settings_manager.get_last_pour_volumes() # NEW
+        self.last_pour_volumes = self.settings_manager.get_last_pour_volumes() 
         
         self.current_pour_volume = [0.0] * self.num_sensors
         self.current_pour_duration = [0.0] * self.num_sensors
@@ -164,7 +167,72 @@ class SensorLogic:
         
         self.sensor_thread = None 
 
+        # --- NEW: Tap Log Initialization ---
+        # Use SettingsManager's resolved data_dir for the log file
+        base_dir = self.settings_manager.get_data_dir()
+        self.pour_log_file = os.path.join(base_dir, "pour_log.csv")
+        self._ensure_log_header()
+        
         self._load_initial_volumes()
+
+    def _ensure_log_header(self):
+        """Creates the CSV log file with headers if it doesn't exist."""
+        if not os.path.exists(self.pour_log_file):
+            try:
+                with open(self.pour_log_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Timestamp", "Tap Name", "Keg Title", "Beverage Name", "Volume Poured (L)", "Volume Remaining (L)", "Duration (s)"])
+                print(f"SensorLogic: Created new pour log at {self.pour_log_file}")
+            except Exception as e:
+                print(f"SensorLogic Error: Could not create pour log: {e}")
+
+    def _log_pour_to_csv(self, sensor_index, volume_poured, duration_seconds):
+        """Appends a completed pour record to the CSV file."""
+        # 1. Check if logging is enabled
+        if not self.settings_manager.get_enable_pour_log():
+            return
+
+        try:
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Change: Store "Tap {number}" regardless of user label
+            tap_label = f"Tap {sensor_index + 1}"
+            
+            assignments = self.settings_manager.get_sensor_keg_assignments()
+            keg_id = assignments[sensor_index] if sensor_index < len(assignments) else None
+            keg = self.settings_manager.get_keg_by_id(keg_id)
+            keg_title = keg.get('title', 'Unknown') if keg else "Offline"
+            
+            bev_assignments = self.settings_manager.get_sensor_beverage_assignments()
+            bev_id = bev_assignments[sensor_index] if sensor_index < len(bev_assignments) else None
+            
+            # Resolve Beverage Name
+            beverage_lib = self.settings_manager.get_beverage_library().get('beverages', [])
+            beverage = next((b for b in beverage_lib if b['id'] == bev_id), None)
+            beverage_name = beverage['name'] if beverage else "Unassigned"
+            
+            # Volume Remaining
+            remaining = self.last_known_remaining_liters[sensor_index]
+            remaining_str = f"{remaining:.3f}" if remaining is not None else "--"
+            
+            row = [
+                now_str,
+                tap_label,
+                keg_title,
+                beverage_name,
+                f"{volume_poured:.3f}",
+                remaining_str,
+                f"{duration_seconds:.1f}"
+            ]
+            
+            with open(self.pour_log_file, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(row)
+                
+            print(f"SensorLogic: Logged pour for {tap_label}: {volume_poured:.2f}L")
+            
+        except Exception as e:
+            print(f"SensorLogic Error: Failed to log pour: {e}")
         
     def _calculate_flow_metrics(self, sensor_index, pulses, time_interval, k_factor, status_override="Nominal", update_ui=True, persist_data=True):
         
@@ -558,20 +626,23 @@ class SensorLogic:
                         total_seconds = self.current_pour_duration[i]
                         total_liters = self.current_pour_volume[i]
                         
+                        # --- LOGGING: Only log significant pours (> 0.01L) to avoid spamming 0.00 logs ---
+                        if total_liters > 0.01 and persist:
+                            self._log_pour_to_csv(i, total_liters, total_seconds)
+                        
                         if total_seconds > 0 and total_liters > 0.06:
                             avg_lpm = total_liters / (total_seconds / 60.0)
                             self.last_pour_averages[i] = avg_lpm
                             self.settings_manager.save_last_pour_averages(self.last_pour_averages)
                             
-                            # --- NEW: Save Last Pour Volume ---
                             self.last_pour_volumes[i] = total_liters
                             self.settings_manager.save_last_pour_volumes(self.last_pour_volumes)
-                            # ----------------------------------
                         
                         # Use Idle update with FINAL saved values
                         self._update_ui_data(i, self.last_pour_averages[i], self.last_known_remaining_liters[i], "Idle", self.last_pour_volumes[i])
 
                         if not persist:
+                            # Revert simulated pour
                             keg_id = self.keg_ids_assigned[i]
                             if keg_id:
                                 keg = self.settings_manager.get_keg_by_id(keg_id)
