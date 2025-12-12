@@ -1,8 +1,9 @@
 """
-brewbrain/src/sequence_manager.py
+kettlebrain/src/sequence_manager.py
 """
 import time
 import threading
+import math
 from profile_data import BrewProfile, StepType, TimeoutBehavior, SequenceStatus
 
 class SequenceManager:
@@ -86,7 +87,15 @@ class SequenceManager:
              self.resume_sequence()
 
         next_idx = self.current_step_index + 1
+        
         if next_idx < len(self.current_profile.steps):
+            # --- THREAD SAFETY FIX ---
+            # Reset flags BEFORE updating the index. 
+            # This prevents the background thread from seeing the new index 
+            # while the old "completed" flags are still active.
+            self.temp_reached = False
+            self.step_start_time = 0.0
+            
             self.current_step_index = next_idx
             self._init_step(next_idx)
         else:
@@ -150,14 +159,21 @@ class SequenceManager:
         # --- A. Temperature Control ---
         heat_needed = False
         
-        # 1. Determine Heat Demand
+        # 1. Determine Heat Demand based on Step Type
         if step.step_type == StepType.BOIL:
             if step.power_watts and step.power_watts > 0:
                 heat_needed = True
             
+            # BOIL LOGIC: Wait for User's Setpoint (or 212F default)
             if not self.temp_reached:
-                 self.temp_reached = True
-                 self.step_start_time = time.monotonic()
+                 # If user entered a specific boil temp (e.g. 202F for altitude), use it.
+                 # Otherwise default to 212.0F.
+                 boil_target = step.setpoint_f if step.setpoint_f else 212.0
+                 
+                 if self.current_temp >= boil_target:
+                     print(f"[Sequence] Boil Target ({boil_target}F) reached. Starting Timer.")
+                     self.temp_reached = True
+                     self.step_start_time = time.monotonic()
         
         elif step.step_type == StepType.CHILL:
             # CHILL LOGIC: Heaters OFF
@@ -165,7 +181,6 @@ class SequenceManager:
             
             # Timer Logic: Wait for temp to DROP
             if not self.temp_reached:
-                # We are waiting to cool down.
                 # Trigger if current <= target (plus small buffer)
                 if self.current_temp <= (self.target_temp + 1.0):
                     print(f"[Sequence] Chill Target {self.target_temp} reached. Starting Timer.")
@@ -173,7 +188,7 @@ class SequenceManager:
                     self.step_start_time = time.monotonic()
 
         elif self.target_temp > 0:
-            # STANDARD HEATING LOGIC
+            # STANDARD HEATING LOGIC (Mash, Heat, etc.)
             # Hysteresis
             if self.current_temp < (self.target_temp - 0.5):
                 heat_needed = True
@@ -186,16 +201,17 @@ class SequenceManager:
             if not self.temp_reached:
                 # Timer only starts if we are AT or ABOVE target.
                 if self.current_temp >= self.target_temp:
-                    print(f"[Sequence] Target {self.target_temp} reached (Current: {self.current_temp}). Starting Timer.")
+                    print(f"[Sequence] Target {self.target_temp} reached. Starting Timer.")
                     self.temp_reached = True
                     self.step_start_time = time.monotonic()
 
         else:
-            # No target temp -> Start timer immediately
+            # Steps with no target temp (like specific rests) start immediately
             if not self.temp_reached:
                 self.temp_reached = True
                 self.step_start_time = time.monotonic()
         
+        # Apply Relay State
         self.is_heating = heat_needed
         if heat_needed:
             self.relay.set_relays(True, True, False)
@@ -209,14 +225,70 @@ class SequenceManager:
             self.step_elapsed_time = 0
             return 
 
-        # Now we are running
+        # Now we are running (Temp Reached)
         now = time.monotonic()
         self.step_elapsed_time = now - self.step_start_time - self.total_paused_time
         
-        duration_sec = step.duration_min * 60.0
+        # Handle Duration (Explicitly allow 0.0)
+        duration_val = step.duration_min if step.duration_min is not None else 0.0
+        duration_sec = duration_val * 60.0
         
-        # 1. Check Completion
-        if duration_sec > 0 and self.step_elapsed_time >= duration_sec:
+        remaining_sec = duration_sec - self.step_elapsed_time
+        remaining_min = remaining_sec / 60.0
+
+        # --- C. GATEKEEPER: Check Actions/Additions ---
+        
+        if hasattr(step, 'additions'):
+            for add in step.additions:
+                if not add.triggered:
+                    
+                    should_trigger = False
+                    
+                    # Logic 1: Standard Time Check
+                    # "Trigger if remaining time is less than X" (with small buffer)
+                    if remaining_min <= (add.time_point_min + 0.005):
+                        should_trigger = True
+                        
+                    # Logic 2: Zero-Duration Override
+                    # If the step is 0 minutes long, ALL actions are due immediately.
+                    # We force trigger them to ensure they aren't skipped.
+                    if duration_val <= 0.0:
+                        should_trigger = True
+
+                    if should_trigger:
+                        # TRIGGER ACTION
+                        add.triggered = True 
+                        self.status = SequenceStatus.WAITING_FOR_USER
+                        self.current_alert_text = add.name
+                        
+                        # PAUSE LOGIC
+                        # If we are at the very start (first 1 sec) OR the step is 0 duration,
+                        # we must "Pause" the internal clock so it doesn't tick past 0
+                        # while the user is acknowledging.
+                        if self.step_elapsed_time < 1.0 or duration_val <= 0.0:
+                             self.last_pause_start = time.monotonic()
+                             print(f"[Sequence] Start Action '{add.name}': Timer PAUSED")
+                        else:
+                             # Mid-step action: Let timer run (Yellow Mode)
+                             # We DO NOT set last_pause_start here.
+                             print(f"[Sequence] Mid Action '{add.name}': Timer CONTINUES")
+
+                        # Stop processing so we wait for user response
+                        return
+
+        # --- D. Step Completion ---
+        
+        # Check if time is up
+        if self.step_elapsed_time >= duration_sec:
+            
+            # FINAL SAFETY CHECK:
+            # Do not allow completion if there are still un-triggered additions.
+            # This handles the case where multiple 0-min actions exist.
+            if hasattr(step, 'additions'):
+                if any(not a.triggered for a in step.additions):
+                    return 
+
+            # Proceed to Finish Step
             if step.timeout_behavior == TimeoutBehavior.AUTO_ADVANCE:
                 self.advance_step()
             else:
@@ -224,21 +296,7 @@ class SequenceManager:
                 self.last_pause_start = time.monotonic()
                 self.current_alert_text = "Step Complete"
             return
-
-        # 2. Check Alerts
-        if hasattr(step, 'additions'):
-            time_remaining_sec = duration_sec - self.step_elapsed_time
-            remaining_min = time_remaining_sec / 60.0
-            
-            for add in step.additions:
-                if not add.triggered:
-                    if remaining_min <= add.time_point_min:
-                        add.triggered = True
-                        self.status = SequenceStatus.WAITING_FOR_USER
-                        self.last_pause_start = time.monotonic()
-                        self.current_alert_text = add.name
-                        return
-
+                        
     # --- Data Access for UI ---
     
     def get_display_timer(self):
@@ -256,8 +314,18 @@ class SequenceManager:
         step = self.current_profile.steps[self.current_step_index]
         total_sec = step.duration_min * 60.0
         
+        # Determine if we should show "Live" time or "Frozen" time
+        is_live = False
         if self.status == SequenceStatus.RUNNING:
-            rem = max(0, total_sec - self.step_elapsed_time)
+            is_live = True
+        elif self.status == SequenceStatus.WAITING_FOR_USER:
+            if self.last_pause_start == 0:
+                is_live = True
+
+        if is_live:
+            current_elapsed = time.monotonic() - self.step_start_time - self.total_paused_time
+            rem = total_sec - current_elapsed
+            if rem < 0: rem = 0 
         else:
             if self.last_pause_start > 0:
                 current_elapsed = self.last_pause_start - self.step_start_time - self.total_paused_time
@@ -265,8 +333,13 @@ class SequenceManager:
             else:
                 rem = max(0, total_sec - self.step_elapsed_time)
             
-        m = int(rem // 60)
-        s = int(rem % 60)
+        # --- FIX: USE CEILING FOR SMOOTH COUNTDOWN ---
+        # This ensures 5.9s shows as "06" and 5.1s shows as "06", 
+        # snapping to "05" only when we truly cross the integer threshold.
+        val = math.ceil(rem)
+        
+        m = int(val // 60)
+        s = int(val % 60)
         return f"{m:02d}:{s:02d}"
 
     def get_status_message(self):

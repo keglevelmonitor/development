@@ -1,5 +1,5 @@
 """
-brewbrain app
+kettlebrain app
 profile_editor.py
 """
 
@@ -403,19 +403,21 @@ class ProfileEditor(tk.Toplevel):
             step.timeout_behavior = TimeoutBehavior(self.var_timeout.get())
             step.note = self.txt_note.get("1.0", tk.END).strip()
             
-            t_val = self.var_temp.get()
-            temp_float = float(t_val) if t_val else None
+            # --- ROBUST NUMERIC HANDLING ---
+            # We check for empty strings explicitly so that "0" is treated as a valid number
             
-            step.setpoint_f = temp_float
+            t_val = self.var_temp.get().strip()
+            step.setpoint_f = float(t_val) if t_val != "" else None
             step.lauter_temp_f = None
             
-            p_val = self.var_power.get()
-            step.power_watts = int(p_val) if p_val else None
+            p_val = self.var_power.get().strip()
+            step.power_watts = int(p_val) if p_val != "" else None
             
-            v_val = self.var_volume.get()
-            step.lauter_volume = float(v_val) if v_val else None
+            v_val = self.var_volume.get().strip()
+            step.lauter_volume = float(v_val) if v_val != "" else None
             
-            d_val = self.var_duration.get()
+            # --- FIX: DURATION HANDLING ---
+            d_val = self.var_duration.get().strip()
             
             if step.step_type == StepType.DELAYED_START:
                  raw_date = self.var_ds_date.get().split(" ")[0]
@@ -424,7 +426,17 @@ class ProfileEditor(tk.Toplevel):
                  step.target_completion_time = f"{raw_date} {hh}:{mm}"
                  step.duration_min = 0.0
             else:
-                 step.duration_min = float(d_val) if d_val else 0.0
+                 # Explicitly handle 0 or blank
+                 if d_val == "":
+                     # Default to 0.0 if blank
+                     step.duration_min = 0.0
+                 else:
+                     f_val = float(d_val)
+                     if f_val < 0:
+                         messagebox.showerror("Error", "Duration cannot be negative.", parent=self)
+                         return False
+                     step.duration_min = f_val
+                 
                  step.target_completion_time = None
                  
             return True
@@ -454,8 +466,15 @@ class ProfileEditor(tk.Toplevel):
         
         self.var_name.set(step.name)
         self.var_type.set(step.step_type.value) 
+        
+        # Temp: Check explicitly for None so 0.0 is valid
         self.var_temp.set(str(step.setpoint_f) if step.setpoint_f is not None else "")
-        self.var_duration.set(str(step.duration_min) if step.duration_min else "")
+        
+        # --- FIX: DURATION DISPLAY ---
+        # Old Code: str(step.duration_min) if step.duration_min else ""
+        # The old code hid "0.0" because 0 is falsy.
+        # New Code: Check 'is not None' to correctly display "0.0"
+        self.var_duration.set(str(step.duration_min) if step.duration_min is not None else "")
         
         pwr = str(step.power_watts) if step.power_watts is not None else "1800"
         self.var_power.set(pwr)
@@ -557,6 +576,7 @@ class ProfileEditor(tk.Toplevel):
         if not self.loading_step:
             self.var_name.set(t_val)
 
+        # Default: Enable most fields
         self._set_state(self.ent_temp, True)
         self._set_state(self.ent_dur, True)
         self._set_state(self.cb_pwr, True) 
@@ -575,8 +595,13 @@ class ProfileEditor(tk.Toplevel):
             self.frm_delay.grid()
 
         elif t == StepType.BOIL:
-            self._set_state(self.ent_temp, False)
-            self.var_temp.set("")
+            # FIX: Do NOT disable temp. 
+            # Allow user to set their specific boil temp (e.g. 202F for Denver)
+            self._set_state(self.ent_temp, True)
+            
+            # Optional: Set a default ONLY if box is empty
+            if self.var_temp.get() == "":
+                self.var_temp.set("212")
             
         elif t == StepType.CHILL:
             self._set_state(self.cb_pwr, False)

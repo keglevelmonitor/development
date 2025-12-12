@@ -1,5 +1,5 @@
 """
-brewbrain app
+kettlebrain app
 relay_control.py
 """
 

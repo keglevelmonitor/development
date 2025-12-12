@@ -1,5 +1,5 @@
 """
-brewbrain app
+kettlebrain app
 settings_manager.py
 """
 
@@ -11,8 +11,8 @@ from typing import List, Optional, Dict
 # UPDATED IMPORTS: Added BrewAddition
 from profile_data import BrewProfile, BrewStep, StepType, TimeoutBehavior, BrewAddition
 
-SETTINGS_FILE = "brewbrain_settings.json"
-DATA_DIR_NAME = "brewbrain-data"
+SETTINGS_FILE = "kettlebrain_settings.json"
+DATA_DIR_NAME = "kettlebrain-data"
 
 class SettingsManager:
     

@@ -1,5 +1,5 @@
 """
-brewbrain app
+kettlebrain app
 profile_data.py
 """
 from dataclasses import dataclass, field, asdict

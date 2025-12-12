@@ -1,5 +1,5 @@
 """
-brewbrain app
+kettlebrain app
 main.py
 """
 import tkinter as tk
@@ -18,7 +18,7 @@ from ui_manager import UIManager
 from hardware_interface import HardwareInterface # <--- NEW IMPORT
 
 # --- CONSTANTS ---
-APP_NAME = "BrewBrain"
+APP_NAME = "KettleBrain"
 VERSION = "0.2.0-Dev"
 
 # --- HARDWARE PIN MAP (BCM) ---
@@ -28,7 +28,7 @@ RELAY_PINS = {
     "Aux": 22      # Optional Fan
 }
 
-class BrewBrainApp:
+class KettleBrainApp:
     def __init__(self):
         self.root = None
         self.relay_control = None
@@ -98,5 +98,5 @@ class BrewBrainApp:
         sys.exit(0)
 
 if __name__ == "__main__":
-    app = BrewBrainApp()
+    app = KettleBrainApp()
     app.run()

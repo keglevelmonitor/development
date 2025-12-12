@@ -25,7 +25,7 @@ class UIManager:
         self.last_profile_id = None 
         self.last_active_iid = None 
         
-        self.root.title("BrewBrain")
+        self.root.title("KettleBrain")
         self.root.geometry("800x600")
         self.root.resizable(False, False)
         self._configure_styles()
@@ -51,16 +51,31 @@ class UIManager:
         style.configure('HeroTempBlue.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#3498db')
         style.configure('HeroTempGreen.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#00ff00')
 
-        style.configure('HeroTimer.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#00ff00')
+        # --- TIMER STYLES ---
+        style.configure('HeroTimer.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#00ff00') # Green
+        style.configure('HeroTimerAlert.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#f1c40f') # Yellow
+
+        # --- STATUS LABEL STYLES ---
+        # Normal (Gray/White)
         style.configure('HeroStatus.TLabel', font=('Arial', 18), background='#222222', foreground='#cccccc')
+        # Alert (Bold Yellow)
+        style.configure('HeroStatusAlert.TLabel', font=('Arial', 24, 'bold'), background='#222222', foreground='#f1c40f')
+
         style.configure('HeroTarget.TLabel', font=('Arial', 14), background='#222222', foreground='#888888')
         style.configure('HeroAddition.TLabel', font=('Arial', 14, 'bold'), background='#222222', foreground='#f1c40f')
+        
         style.configure('Strip.TFrame', background='#444444')
         style.configure('Controls.TFrame', background='#222222')
         
+        # --- BUTTON STYLES ---
         style.configure('Action.TButton', font=('Arial', 16, 'bold'), foreground='blue')
         style.configure('Stop.TButton', font=('Arial', 16, 'bold'), foreground='red')
         style.configure('Advance.TButton', font=('Arial', 16, 'bold'), foreground='blue')
+        
+        # NEW: Yellow Alert Button (Yellow Background, Black Text)
+        style.configure('Alert.TButton', font=('Arial', 16, 'bold'), foreground='black', background='#f1c40f')
+        # Add a map to slightly darken the yellow when clicked/active so it feels responsive
+        style.map('Alert.TButton', background=[('active', '#d4ac0d')], foreground=[('active', 'black')])
 
     def _create_main_layout(self):
         self.hero_frame = ttk.Frame(self.root, style='Hero.TFrame', height=240)
@@ -126,9 +141,13 @@ class UIManager:
         self.step_list.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
+        # --- TAG CONFIGURATION ---
         self.step_list.tag_configure('active_step', background='#2ecc71', foreground='black') 
         self.step_list.tag_configure('pending_step', background='white', foreground='black')
         self.step_list.tag_configure('done_step', background='#7f8c8d', foreground='#bdc3c7')
+        
+        # NEW: Alert Tag (Yellow Background, Black Text)
+        self.step_list.tag_configure('alert_step', background='#f1c40f', foreground='black')
 
     def _refresh_step_list(self):
         for item in self.step_list.get_children():
@@ -142,7 +161,7 @@ class UIManager:
         for i, step in enumerate(profile.steps):
             try:
                 d_val = getattr(step, 'duration_min', 0)
-                dur_str = f"{d_val}m" if d_val > 0 else "--"
+                dur_str = f"{d_val}m" if d_val is not None and d_val >= 0 else "--"
             except: dur_str = "ERR"
 
             try:
@@ -187,10 +206,29 @@ class UIManager:
         btn_abort.place(relx=0.75, rely=0.2, relwidth=0.2, relheight=0.6)
 
     def _on_profiles_click(self):
-        if self.library_window and tk.Toplevel.winfo_exists(self.library_window):
-            self.library_window.lift()
-            return
-        self.library_window = ProfileLibraryPopup(self.root, self.settings, self.sequencer)
+        # 1. Clean Check: If window exists, bring to front
+        if self.library_window:
+            try:
+                if self.library_window.winfo_exists():
+                    self.library_window.lift()
+                    return
+                else:
+                    # It's a zombie reference (destroyed but not None), clear it
+                    self.library_window = None
+            except:
+                self.library_window = None
+
+        # 2. Create New Window with Cleanup Callback
+        # We pass a lambda to clear the reference when the window closes
+        def on_close_callback():
+            self.library_window = None
+
+        self.library_window = ProfileLibraryPopup(
+            self.root, 
+            self.settings, 
+            self.sequencer,
+            on_close=on_close_callback
+        )
 
     def _on_action_click(self):
         status = self.sequencer.status
@@ -251,26 +289,77 @@ class UIManager:
 
     def toggle_dev_tools(self, is_active):
         if not is_active:
-            if self.dev_window and tk.Toplevel.winfo_exists(self.dev_window): self.dev_window.destroy()
+            if self.dev_window and tk.Toplevel.winfo_exists(self.dev_window): 
+                self.dev_window.destroy()
             self.dev_window = None
             return
+            
         if self.dev_window and tk.Toplevel.winfo_exists(self.dev_window):
             self.dev_window.lift()
             return
+            
         self.dev_window = tk.Toplevel(self.root)
         self.dev_window.title("Dev Tools")
-        self.dev_window.geometry("300x220")
+        self.dev_window.geometry("450x220") # Widened to fit buttons
         self.dev_window.configure(bg="#333333")
+        
         def _on_close():
             self.dev_window.destroy()
             self.dev_window = None
         self.dev_window.protocol("WM_DELETE_WINDOW", _on_close)
+        
+        # Header
         tk.Label(self.dev_window, text="Temperature Simulator", fg="white", bg="#333333", font=("Arial", 12, "bold")).pack(pady=10)
-        def update_sim_temp(val): self.hw.set_virtual_temp(val)
-        slider = tk.Scale(self.dev_window, from_=50, to=220, orient="horizontal", bg="#333333", fg="white", highlightthickness=0, command=update_sim_temp)
+        
+        # Container for Buttons + Slider
+        control_frame = tk.Frame(self.dev_window, bg="#333333")
+        control_frame.pack(fill="x", padx=10, pady=5)
+
+        # --- Logic Functions ---
+        def update_sim_temp(val): 
+            self.hw.set_virtual_temp(float(val))
+
+        # We must define the slider first so buttons can reference it
+        slider = tk.Scale(
+            control_frame, 
+            from_=50, 
+            to=220, 
+            orient="horizontal", 
+            bg="#333333", 
+            fg="white", 
+            highlightthickness=0, 
+            command=update_sim_temp,
+            length=250
+        )
+        # Set initial value
         current_temp = self.hw.read_temperature()
         slider.set(current_temp)
-        slider.pack(fill="x", padx=20)
+
+        def dec_temp():
+            val = slider.get()
+            new_val = max(50, val - 1) # Respect min limit
+            slider.set(new_val)
+            update_sim_temp(new_val) # Force update
+
+        def inc_temp():
+            val = slider.get()
+            new_val = min(220, val + 1) # Respect max limit
+            slider.set(new_val)
+            update_sim_temp(new_val) # Force update
+
+        # --- Layout ---
+        # Decrease Button (<)
+        btn_down = tk.Button(control_frame, text="<", font=("Arial", 12, "bold"), width=3, command=dec_temp)
+        btn_down.pack(side="left", padx=5)
+
+        # Slider (Center)
+        slider.pack(side="left", fill="x", expand=True, padx=5)
+
+        # Increase Button (>)
+        btn_up = tk.Button(control_frame, text=">", font=("Arial", 12, "bold"), width=3, command=inc_temp)
+        btn_up.pack(side="left", padx=5)
+
+        # Force Next Step Button
         btn_skip = tk.Button(self.dev_window, text="⏭ Force Next Step", bg="#e67e22", fg="white", font=("Arial", 10, "bold"), command=self._dev_force_next)
         btn_skip.pack(pady=15, fill="x", padx=20)
 
@@ -286,7 +375,7 @@ class UIManager:
         except Exception as e:
             print(f"[UI ERROR] Loop crashed: {e}")
             traceback.print_exc()
-        self.root.after(250, self._update_loop)
+        self.root.after(100, self._update_loop)
 
     def update_ui_from_state(self):
         t = self.sequencer.current_temp
@@ -295,6 +384,10 @@ class UIManager:
         st = self.sequencer.status
         tgt = self.sequencer.get_target_temp()
         
+        # Check if we are in an Alert State
+        is_mid_step_alert = (st == SequenceStatus.WAITING_FOR_USER and self.sequencer.current_alert_text != "Step Complete")
+
+        # --- 1. Temp Color Logic ---
         new_style = 'HeroTemp.TLabel'
         if st in [SequenceStatus.RUNNING, SequenceStatus.WAITING_FOR_USER] and tgt is not None and tgt > 0:
             diff = t - tgt
@@ -303,13 +396,30 @@ class UIManager:
             else: new_style = 'HeroTempGreen.TLabel'
         self.lbl_temp.configure(style=new_style)
 
+        # --- 2. Timer & Status Logic ---
         self.timer_var.set(self.sequencer.get_display_timer())
-        self.status_text_var.set(self.sequencer.get_status_message())
-        self.next_addition_var.set(self.sequencer.get_upcoming_additions())
+        
+        # Get the raw status message (e.g., "Dough In")
+        raw_msg = self.sequencer.get_status_message()
 
+        if is_mid_step_alert:
+            self.lbl_timer.configure(style='HeroTimerAlert.TLabel')   # Yellow Timer
+            self.lbl_status.configure(style='HeroStatusAlert.TLabel') # Bold Yellow Status
+            
+            # FIX: Sanitize the raw message to prevent "ALERT: ALERT: ..."
+            clean_msg = raw_msg.replace("ALERT: ", "").replace("ALERT:", "").strip()
+            self.status_text_var.set(f"ALERT: {clean_msg}")
+        else:
+            self.lbl_timer.configure(style='HeroTimer.TLabel')        # Green Timer
+            self.lbl_status.configure(style='HeroStatus.TLabel')      # Gray Status
+            self.status_text_var.set(raw_msg)
+
+        self.next_addition_var.set(self.sequencer.get_upcoming_additions())
+        
         if tgt: self.target_text_var.set(f"Target: {tgt:.1f}°F")
         else: self.target_text_var.set("")
 
+        # --- 3. Sequence Strip Rendering ---
         current_idx = self.sequencer.current_step_index
         profile = self.sequencer.current_profile
         
@@ -319,13 +429,10 @@ class UIManager:
              self.last_profile_id = current_pid
 
         if profile and current_idx is not None and 0 <= current_idx < len(profile.steps):
-            
             step = profile.steps[current_idx]
             step_iid = str(current_idx)
-            
             active_cursor_iid = step_iid
             
-            is_waiting = (self.sequencer.status == SequenceStatus.WAITING_FOR_USER)
             alert_text = self.sequencer.current_alert_text
 
             if hasattr(step, 'additions') and step.additions:
@@ -334,107 +441,135 @@ class UIManager:
                 for j, child_iid in enumerate(children):
                     if j < len(sorted_adds):
                         add_obj = sorted_adds[j]
-                        if is_waiting and alert_text and (add_obj.name in alert_text):
+                        if is_mid_step_alert and alert_text and (add_obj.name in alert_text):
                             active_cursor_iid = child_iid
                             break
 
-            cursor_reached = False
-            
-            # --- RENDER LOOP WITH CHILD STATE LOGIC ---
-            for parent_iid in self.step_list.get_children():
-                # --- PROCESS PARENT ---
-                if parent_iid == active_cursor_iid:
-                    # Parent is active
+            for i, parent_iid in enumerate(self.step_list.get_children()):
+                if i < current_idx:
+                    self.step_list.item(parent_iid, tags=('done_step',))
+                    for child in self.step_list.get_children(parent_iid):
+                        self.step_list.item(child, tags=('done_step',))
+                elif i > current_idx:
+                    self.step_list.item(parent_iid, tags=('pending_step',))
+                    for child in self.step_list.get_children(parent_iid):
+                        self.step_list.item(child, tags=('pending_step',))
+                else: 
                     self.step_list.item(parent_iid, tags=('active_step',))
-                    self.step_list.selection_set(parent_iid)
-                    cursor_reached = True
+                    children = self.step_list.get_children(parent_iid)
+                    current_step_obj = profile.steps[current_idx]
                     
-                    # --- PROCESS CHILDREN INSIDE ACTIVE PARENT ---
-                    # Here we check if individual alerts are Done/Active/Pending
-                    if hasattr(step, 'additions') and step.additions:
-                        children = self.step_list.get_children(parent_iid)
-                        sorted_adds = sorted(step.additions, key=lambda x: x.time_point_min, reverse=True)
-                        
+                    if hasattr(current_step_obj, 'additions') and current_step_obj.additions:
+                        sorted_adds = sorted(current_step_obj.additions, key=lambda x: x.time_point_min, reverse=True)
                         for j, child_iid in enumerate(children):
                             if j < len(sorted_adds):
                                 add_obj = sorted_adds[j]
-                                
                                 if child_iid == active_cursor_iid:
-                                    # This specific alert is blocking right now
-                                    self.step_list.item(child_iid, tags=('active_step',))
-                                    self.step_list.selection_set(child_iid)
+                                    if is_mid_step_alert:
+                                        self.step_list.item(child_iid, tags=('alert_step',))
+                                    else:
+                                        self.step_list.item(child_iid, tags=('active_step',))
                                 elif add_obj.triggered:
-                                    # Already happened -> Gray
                                     self.step_list.item(child_iid, tags=('done_step',))
                                 else:
-                                    # Future -> White
                                     self.step_list.item(child_iid, tags=('pending_step',))
-                    
-                elif not cursor_reached:
-                    # Parent is Past -> Gray
-                    self.step_list.item(parent_iid, tags=('done_step',))
-                    # All children Past -> Gray
-                    for child in self.step_list.get_children(parent_iid):
-                        self.step_list.item(child, tags=('done_step',))
-                else:
-                    # Parent is Future -> White
-                    self.step_list.item(parent_iid, tags=('pending_step',))
-                    # All children Future -> White
-                    for child in self.step_list.get_children(parent_iid):
-                        self.step_list.item(child, tags=('pending_step',))
 
-            # Scroll only on change
             if active_cursor_iid != self.last_active_iid:
                 self.step_list.see(active_cursor_iid)
+                self.step_list.selection_set(active_cursor_iid)
                 self.last_active_iid = active_cursor_iid
 
+        # --- 4. Button State Logic ---
         st = self.sequencer.status
         self.btn_action.state(['!disabled']) 
-        self.btn_action.configure(style='Action.TButton') 
-
+        
         if st == SequenceStatus.IDLE:
             self.action_btn_text.set("START BREW")
+            self.btn_action.configure(style='Action.TButton') 
+
         elif st == SequenceStatus.RUNNING:
             self.action_btn_text.set("PAUSE")
+            self.btn_action.configure(style='Action.TButton') 
+
         elif st == SequenceStatus.PAUSED:
             self.action_btn_text.set("RESUME")
+            self.btn_action.configure(style='Action.TButton') 
+            
         elif st == SequenceStatus.WAITING_FOR_USER:
             alert_txt = self.sequencer.current_alert_text
-            if alert_txt and alert_txt != "Step Complete":
-                self.action_btn_text.set(f"ACKNOWLEDGE: {alert_txt}")
+            
+            if is_mid_step_alert:
+                # BUTTON SAYS "ACKNOWLEDGE" (Yellow Background)
+                self.action_btn_text.set(f"ACKNOWLEDGE:\n{alert_txt}")
+                self.btn_action.configure(style='Alert.TButton')
             else:
-                self.action_btn_text.set("STEP DONE - NEXT ⏭")
-            self.btn_action.configure(style='Advance.TButton')
+                # BUTTON SAYS "ADVANCE" (Blue Text)
+                step_num = current_idx + 1
+                if current_idx + 1 < len(profile.steps):
+                    next_step_num = step_num + 1
+                    self.action_btn_text.set(f"Step {step_num} COMPLETE\nADVANCE to Step {next_step_num}")
+                else:
+                    self.action_btn_text.set(f"Step {step_num} COMPLETE\nFINISH BREW")
+                self.btn_action.configure(style='Advance.TButton')
+            
         elif st == SequenceStatus.COMPLETED:
             self.action_btn_text.set("COMPLETE")
             self.btn_action.state(['disabled'])
 
 class ProfileLibraryPopup(tk.Toplevel):
-    def __init__(self, parent, settings_manager, sequencer):
+    def __init__(self, parent, settings_manager, sequencer, on_close=None):
         super().__init__(parent)
         self.title("Profile Library")
         self.geometry("600x400")
         self.transient(parent)
+        
         self.settings = settings_manager
         self.sequencer = sequencer
-        
+        self.on_close_callback = on_close
         self.editor_window = None
         
+        # 1. Build UI first
         self._layout()
         self._refresh_list()
+        
+        # 2. Setup Closing Protocol
         self.protocol("WM_DELETE_WINDOW", self.close) 
+        
+        # 3. CRITICAL FIX: Safe Launch Sequence
+        # We must center/update the window BEFORE we grab focus.
+        self.update_idletasks() 
+        
+        # Center the window relative to parent (Optional but nice)
+        x = parent.winfo_rootx() + 50
+        y = parent.winfo_rooty() + 50
+        self.geometry(f"+{x}+{y}")
+        
+        # 4. Wait for visibility BEFORE locking the UI
+        # This prevents the "Freeze" if the window fails to map immediately
+        self.wait_visibility()
+        
+        # 5. Now it is safe to grab focus
         self.grab_set() 
         self.focus_set() 
-        self.wait_visibility() 
 
     def close(self):
+        # 1. Release the UI Lock immediately
         try:
             self.grab_release()
         except:
             pass
-        finally:
-            if self.master: self.master.focus_set()
-            self.destroy()
+        
+        # 2. Fire the cleanup callback to notify UIManager
+        if self.on_close_callback:
+            try:
+                self.on_close_callback()
+            except:
+                pass
+            
+        # 3. Return focus to main app and destroy self
+        if self.master:
+            self.master.focus_set()
+        self.destroy()
 
     def _layout(self):
         toolbar = ttk.Frame(self, padding=5)
