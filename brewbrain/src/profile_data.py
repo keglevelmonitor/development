@@ -2,7 +2,6 @@
 brewbrain app
 profile_data.py
 """
-
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 from enum import Enum
@@ -12,13 +11,13 @@ import uuid
 
 class StepType(str, Enum):
     # Actions (Hardware Control)
-    DELAYED_START = "Delayed Start" # Heats to temp by specific time
-    STEP = "Step"                   # Standard Hold
-    MASH = "Mash"                   # Standard Hold
-    MASH_OUT = "Mash-out"           # Heat to 170F/76C
-    BOIL = "Boil"                   # Power % Control
+    DELAYED_START = "Delayed Start" 
+    STEP = "Step"                   
+    MASH = "Mash"                   
+    MASH_OUT = "Mash-out"           
+    BOIL = "Boil"                   
     
-    # Activities (User Input / Manual Tasks)
+    # Activities (Legacy Steps)
     SG_READING = "Specific Gravity Reading"
     LAUTER = "Lauter"
     HOPS_ADJUNCTS = "Hops / Adjuncts"
@@ -27,6 +26,18 @@ class TimeoutBehavior(str, Enum):
     AUTO_ADVANCE = "Auto Advance"
     MANUAL_ADVANCE = "Manual Advance" 
     END_PROGRAM = "End Program"       
+
+# --- NEW: Process Additions ---
+
+@dataclass
+class BrewAddition:
+    """
+    Represents an event that happens DURING a step (e.g. Hops at 60min).
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    name: str = "New Addition"
+    time_point_min: int = 0  # Minutes REMAINING when this triggers
+    triggered: bool = False  # Runtime flag
 
 # --- Main Data Class ---
 
@@ -42,31 +53,22 @@ class BrewStep:
     note: str = ""
     
     # --- ACTION FIELDS ---
-    
-    # Target Temperature 
     setpoint_f: Optional[float] = None  
     
     # --- TIMING FIELDS ---
-    
-    # Duration in MINUTES
     duration_min: float = 0.0
-    
-    # Target-based (Specific for "Delayed Start")
     target_completion_time: Optional[str] = None
     
     # --- POWER / VOLUME ---
-    
-    # Power setting (Watts or %)
     power_watts: Optional[int] = None 
-    
-    # Volume (Specific for Lauter step)
     lauter_volume: Optional[float] = None
-    
-    # Temp (Specific for Lauter step)
     lauter_temp_f: Optional[float] = None
 
     # What happens when the timer hits zero?
     timeout_behavior: TimeoutBehavior = TimeoutBehavior.MANUAL_ADVANCE
+
+    # --- NEW: ADDITIONS LIST ---
+    additions: List[BrewAddition] = field(default_factory=list)
 
     # --- ACTIVITY RESULT FIELDS (For Logging) ---
     sg_reading: Optional[float] = None
@@ -74,6 +76,15 @@ class BrewStep:
     sg_temp_correction: bool = False
     sg_corrected_value: Optional[float] = None
     
+    # Runtime fields (not saved)
+    time_remaining: float = 0.0
+    
+    def reset(self):
+        """Resets runtime flags for a fresh run."""
+        self.time_remaining = self.duration_min * 60
+        for a in self.additions:
+            a.triggered = False
+
     def to_dict(self):
         return asdict(self)
 
@@ -94,7 +105,6 @@ class BrewProfile:
         self.steps = [s for s in self.steps if s.id != step_id]
 
     def reorder_steps(self, new_order_ids: List[str]):
-        """Reorders internal list based on a list of IDs passed from UI"""
         step_map = {s.id: s for s in self.steps}
         new_steps = []
         for uid in new_order_ids:
