@@ -15,19 +15,22 @@ class StepType(str, Enum):
     STEP = "Step"                   
     MASH = "Mash"                   
     MASH_OUT = "Mash-out"           
-    BOIL = "Boil"                   
-    
-    # Activities (Legacy Steps)
-    SG_READING = "Specific Gravity Reading"
-    LAUTER = "Lauter"
-    HOPS_ADJUNCTS = "Hops / Adjuncts"
+    BOIL = "Boil" 
+    CHILL = "Chill"  # <--- NEW ACTION ADDED
 
 class TimeoutBehavior(str, Enum):
     AUTO_ADVANCE = "Auto Advance"
     MANUAL_ADVANCE = "Manual Advance" 
-    END_PROGRAM = "End Program"       
+    END_PROGRAM = "End Profile"       
 
-# --- NEW: Process Additions ---
+class SequenceStatus(str, Enum):
+    IDLE = "Idle"
+    RUNNING = "Running"
+    PAUSED = "Paused"
+    WAITING_FOR_USER = "Waiting for User"
+    COMPLETED = "Completed"
+
+# --- Process Additions ---
 
 @dataclass
 class BrewAddition:
@@ -67,7 +70,7 @@ class BrewStep:
     # What happens when the timer hits zero?
     timeout_behavior: TimeoutBehavior = TimeoutBehavior.MANUAL_ADVANCE
 
-    # --- NEW: ADDITIONS LIST ---
+    # --- ADDITIONS LIST ---
     additions: List[BrewAddition] = field(default_factory=list)
 
     # --- ACTIVITY RESULT FIELDS (For Logging) ---

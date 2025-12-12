@@ -8,8 +8,8 @@ import os
 import threading
 from typing import List, Optional, Dict
 
-# Import our data structures to handle serialization
-from profile_data import BrewProfile, BrewStep, StepType, TimeoutBehavior
+# UPDATED IMPORTS: Added BrewAddition
+from profile_data import BrewProfile, BrewStep, StepType, TimeoutBehavior, BrewAddition
 
 SETTINGS_FILE = "brewbrain_settings.json"
 DATA_DIR_NAME = "brewbrain-data"
@@ -176,11 +176,28 @@ class SettingsManager:
                             lauter_temp_f=s_data.get("lauter_temp_f"),
                             lauter_volume=s_data.get("lauter_volume")
                         )
+                        
+                        # --- FIX: RE-HYDRATE ADDITIONS ---
+                        raw_additions = s_data.get("additions", [])
+                        for add_data in raw_additions:
+                            # Basic validation to ensure it's a dict
+                            if isinstance(add_data, dict):
+                                new_add = BrewAddition(
+                                    id=add_data.get("id"),
+                                    name=add_data.get("name", "Alert"),
+                                    time_point_min=add_data.get("time_point_min", 0),
+                                    triggered=False # Always reset triggered state on load
+                                )
+                                step.additions.append(new_add)
+                        # ---------------------------------
+                        
                         profile.add_step(step)
                         
                     profiles.append(profile)
                 except Exception as e:
                     print(f"[SettingsManager] Error inflating profile {pid}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     
         return profiles
 

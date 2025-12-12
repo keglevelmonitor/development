@@ -5,8 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import traceback
 from profile_editor import ProfileEditor
-from profile_data import BrewProfile, TimeoutBehavior
-from sequence_manager import SequenceStatus
+from profile_data import BrewProfile, TimeoutBehavior, SequenceStatus
 
 class UIManager:
     
@@ -17,7 +16,14 @@ class UIManager:
         self.hw = hardware_interface 
         self.title_clicks = 0
         self.last_click_time = 0
+        
+        # --- WINDOW REFERENCES ---
         self.dev_window = None
+        self.library_window = None
+        
+        # --- STATE TRACKING ---
+        self.last_profile_id = None 
+        self.last_active_iid = None 
         
         self.root.title("BrewBrain")
         self.root.geometry("800x600")
@@ -38,15 +44,21 @@ class UIManager:
         style = ttk.Style()
         style.theme_use('default') 
         style.configure('Hero.TFrame', background='#222222')
+        
+        # --- TEMP COLOR STYLES ---
         style.configure('HeroTemp.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='white')
         style.configure('HeroTempRed.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#ff4444')
+        style.configure('HeroTempBlue.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#3498db')
+        style.configure('HeroTempGreen.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#00ff00')
+
         style.configure('HeroTimer.TLabel', font=('Arial', 80, 'bold'), background='#222222', foreground='#00ff00')
         style.configure('HeroStatus.TLabel', font=('Arial', 18), background='#222222', foreground='#cccccc')
         style.configure('HeroTarget.TLabel', font=('Arial', 14), background='#222222', foreground='#888888')
         style.configure('HeroAddition.TLabel', font=('Arial', 14, 'bold'), background='#222222', foreground='#f1c40f')
         style.configure('Strip.TFrame', background='#444444')
         style.configure('Controls.TFrame', background='#222222')
-        style.configure('Action.TButton', font=('Arial', 16, 'bold'))
+        
+        style.configure('Action.TButton', font=('Arial', 16, 'bold'), foreground='blue')
         style.configure('Stop.TButton', font=('Arial', 16, 'bold'), foreground='red')
         style.configure('Advance.TButton', font=('Arial', 16, 'bold'), foreground='blue')
 
@@ -123,6 +135,8 @@ class UIManager:
             self.step_list.delete(item)
             
         profile = self.sequencer.current_profile
+        self.last_active_iid = None 
+        
         if not profile: return
 
         for i, step in enumerate(profile.steps):
@@ -142,11 +156,25 @@ class UIManager:
                 else: mode_str = "WAIT"
             except: mode_str = "?"
 
+            step_iid = str(i)
             self.step_list.insert(
-                "", "end", iid=str(i), 
+                "", "end", iid=step_iid, 
                 values=(i + 1, step.name, temp_str, dur_str, mode_str),
-                tags=('pending_step',)
+                tags=('pending_step',),
+                open=True 
             )
+            
+            if hasattr(step, 'additions') and step.additions:
+                sorted_additions = sorted(step.additions, key=lambda x: x.time_point_min, reverse=True)
+                for j, add in enumerate(sorted_additions):
+                    child_iid = f"{step_iid}_add_{j}"
+                    add_name = f"  ↳ {add.name}"
+                    add_time = f"@ {add.time_point_min}m"
+                    self.step_list.insert(
+                        step_iid, "end", iid=child_iid,
+                        values=("", add_name, "", add_time, "Alert"),
+                        tags=('pending_step',)
+                    )
 
     def _create_control_widgets(self):
         btn_profiles = ttk.Button(self.controls_frame, text="PROFILES\nLIBRARY", command=self._on_profiles_click)
@@ -159,7 +187,10 @@ class UIManager:
         btn_abort.place(relx=0.75, rely=0.2, relwidth=0.2, relheight=0.6)
 
     def _on_profiles_click(self):
-        ProfileLibraryPopup(self.root, self.settings, self.sequencer)
+        if self.library_window and tk.Toplevel.winfo_exists(self.library_window):
+            self.library_window.lift()
+            return
+        self.library_window = ProfileLibraryPopup(self.root, self.settings, self.sequencer)
 
     def _on_action_click(self):
         status = self.sequencer.status
@@ -173,7 +204,10 @@ class UIManager:
         elif status == SequenceStatus.PAUSED:
             self.sequencer.resume_sequence()
         elif status == SequenceStatus.WAITING_FOR_USER:
-            self.sequencer.advance_step()
+            if self.sequencer.current_alert_text == "Step Complete":
+                self.sequencer.advance_step()
+            else:
+                self.sequencer.resume_sequence()
 
     def _on_abort_click(self):
         if messagebox.askyesno("Abort Brew?", "Are you sure you want to STOP everything?"):
@@ -257,35 +291,102 @@ class UIManager:
     def update_ui_from_state(self):
         t = self.sequencer.current_temp
         self.current_temp_var.set(f"{t:.1f}°F")
-        if self.sequencer.is_heating: self.lbl_temp.configure(style='HeroTempRed.TLabel')
-        else: self.lbl_temp.configure(style='HeroTemp.TLabel')
+        
+        st = self.sequencer.status
+        tgt = self.sequencer.get_target_temp()
+        
+        new_style = 'HeroTemp.TLabel'
+        if st in [SequenceStatus.RUNNING, SequenceStatus.WAITING_FOR_USER] and tgt is not None and tgt > 0:
+            diff = t - tgt
+            if diff < -1.0: new_style = 'HeroTempBlue.TLabel'
+            elif diff > 1.0: new_style = 'HeroTempRed.TLabel'
+            else: new_style = 'HeroTempGreen.TLabel'
+        self.lbl_temp.configure(style=new_style)
 
         self.timer_var.set(self.sequencer.get_display_timer())
         self.status_text_var.set(self.sequencer.get_status_message())
         self.next_addition_var.set(self.sequencer.get_upcoming_additions())
 
-        tgt = self.sequencer.get_target_temp()
         if tgt: self.target_text_var.set(f"Target: {tgt:.1f}°F")
         else: self.target_text_var.set("")
 
         current_idx = self.sequencer.current_step_index
         profile = self.sequencer.current_profile
-        if profile:
-            if not self.step_list.get_children(): self._refresh_step_list()
-            if current_idx is not None and 0 <= current_idx < len(profile.steps):
-                step_id = str(current_idx)
-                children = self.step_list.get_children()
-                if step_id in children:
-                    for item in children:
-                        idx = int(item)
-                        if idx < current_idx: self.step_list.item(item, tags=('done_step',))
-                        elif idx == current_idx: self.step_list.item(item, tags=('active_step',))
-                        else: self.step_list.item(item, tags=('pending_step',))
-                    self.step_list.see(step_id)
-                    self.step_list.selection_set(step_id)
-        else:
-            if self.step_list.get_children():
-                for item in self.step_list.get_children(): self.step_list.delete(item)
+        
+        current_pid = profile.id if profile else None
+        if current_pid != self.last_profile_id:
+             self._refresh_step_list()
+             self.last_profile_id = current_pid
+
+        if profile and current_idx is not None and 0 <= current_idx < len(profile.steps):
+            
+            step = profile.steps[current_idx]
+            step_iid = str(current_idx)
+            
+            active_cursor_iid = step_iid
+            
+            is_waiting = (self.sequencer.status == SequenceStatus.WAITING_FOR_USER)
+            alert_text = self.sequencer.current_alert_text
+
+            if hasattr(step, 'additions') and step.additions:
+                children = self.step_list.get_children(step_iid)
+                sorted_adds = sorted(step.additions, key=lambda x: x.time_point_min, reverse=True)
+                for j, child_iid in enumerate(children):
+                    if j < len(sorted_adds):
+                        add_obj = sorted_adds[j]
+                        if is_waiting and alert_text and (add_obj.name in alert_text):
+                            active_cursor_iid = child_iid
+                            break
+
+            cursor_reached = False
+            
+            # --- RENDER LOOP WITH CHILD STATE LOGIC ---
+            for parent_iid in self.step_list.get_children():
+                # --- PROCESS PARENT ---
+                if parent_iid == active_cursor_iid:
+                    # Parent is active
+                    self.step_list.item(parent_iid, tags=('active_step',))
+                    self.step_list.selection_set(parent_iid)
+                    cursor_reached = True
+                    
+                    # --- PROCESS CHILDREN INSIDE ACTIVE PARENT ---
+                    # Here we check if individual alerts are Done/Active/Pending
+                    if hasattr(step, 'additions') and step.additions:
+                        children = self.step_list.get_children(parent_iid)
+                        sorted_adds = sorted(step.additions, key=lambda x: x.time_point_min, reverse=True)
+                        
+                        for j, child_iid in enumerate(children):
+                            if j < len(sorted_adds):
+                                add_obj = sorted_adds[j]
+                                
+                                if child_iid == active_cursor_iid:
+                                    # This specific alert is blocking right now
+                                    self.step_list.item(child_iid, tags=('active_step',))
+                                    self.step_list.selection_set(child_iid)
+                                elif add_obj.triggered:
+                                    # Already happened -> Gray
+                                    self.step_list.item(child_iid, tags=('done_step',))
+                                else:
+                                    # Future -> White
+                                    self.step_list.item(child_iid, tags=('pending_step',))
+                    
+                elif not cursor_reached:
+                    # Parent is Past -> Gray
+                    self.step_list.item(parent_iid, tags=('done_step',))
+                    # All children Past -> Gray
+                    for child in self.step_list.get_children(parent_iid):
+                        self.step_list.item(child, tags=('done_step',))
+                else:
+                    # Parent is Future -> White
+                    self.step_list.item(parent_iid, tags=('pending_step',))
+                    # All children Future -> White
+                    for child in self.step_list.get_children(parent_iid):
+                        self.step_list.item(child, tags=('pending_step',))
+
+            # Scroll only on change
+            if active_cursor_iid != self.last_active_iid:
+                self.step_list.see(active_cursor_iid)
+                self.last_active_iid = active_cursor_iid
 
         st = self.sequencer.status
         self.btn_action.state(['!disabled']) 
@@ -298,10 +399,11 @@ class UIManager:
         elif st == SequenceStatus.PAUSED:
             self.action_btn_text.set("RESUME")
         elif st == SequenceStatus.WAITING_FOR_USER:
-            if self.sequencer.current_alert_text:
-                self.action_btn_text.set("CONFIRM & CONTINUE ⏭")
+            alert_txt = self.sequencer.current_alert_text
+            if alert_txt and alert_txt != "Step Complete":
+                self.action_btn_text.set(f"ACKNOWLEDGE: {alert_txt}")
             else:
-                self.action_btn_text.set("ADVANCE STEP ⏭")
+                self.action_btn_text.set("STEP DONE - NEXT ⏭")
             self.btn_action.configure(style='Advance.TButton')
         elif st == SequenceStatus.COMPLETED:
             self.action_btn_text.set("COMPLETE")
@@ -315,6 +417,9 @@ class ProfileLibraryPopup(tk.Toplevel):
         self.transient(parent)
         self.settings = settings_manager
         self.sequencer = sequencer
+        
+        self.editor_window = None
+        
         self._layout()
         self._refresh_list()
         self.protocol("WM_DELETE_WINDOW", self.close) 
@@ -323,14 +428,19 @@ class ProfileLibraryPopup(tk.Toplevel):
         self.wait_visibility() 
 
     def close(self):
-        self.grab_release()
-        if self.master: self.master.focus_set()
-        self.destroy()
+        try:
+            self.grab_release()
+        except:
+            pass
+        finally:
+            if self.master: self.master.focus_set()
+            self.destroy()
 
     def _layout(self):
         toolbar = ttk.Frame(self, padding=5)
         toolbar.pack(fill='x', side='bottom')
-        ttk.Button(toolbar, text="Load & Run", command=self._load_selected).pack(side='right', padx=5)
+        
+        ttk.Button(toolbar, text="Load Profile", command=self._load_selected).pack(side='right', padx=5)
         ttk.Button(toolbar, text="Edit", command=self._edit_selected).pack(side='right', padx=5)
         ttk.Button(toolbar, text="Delete", command=self._delete_selected).pack(side='right', padx=5)
         ttk.Button(toolbar, text="+ New Profile", command=self._create_new).pack(side='left', padx=5)
@@ -362,15 +472,35 @@ class ProfileLibraryPopup(tk.Toplevel):
             self.close()
 
     def _edit_selected(self):
+        if self.editor_window:
+            try:
+                if self.editor_window.winfo_exists():
+                    self.editor_window.lift()
+                    return
+                else:
+                    self.editor_window = None
+            except:
+                self.editor_window = None
+
         pid = self._get_selected_id()
         if not pid: return
         profile = self.settings.get_profile_by_id(pid)
         if profile:
-            ProfileEditor(self, profile, on_save_callback=self._on_editor_save)
+            self.editor_window = ProfileEditor(self, profile, on_save_callback=self._on_editor_save)
 
     def _create_new(self):
+        if self.editor_window:
+            try:
+                if self.editor_window.winfo_exists():
+                    self.editor_window.lift()
+                    return
+                else:
+                    self.editor_window = None
+            except:
+                self.editor_window = None
+            
         new_p = BrewProfile(name="New Profile")
-        ProfileEditor(self, new_p, on_save_callback=self._on_editor_save)
+        self.editor_window = ProfileEditor(self, new_p, on_save_callback=self._on_editor_save)
 
     def _delete_selected(self):
         pid = self._get_selected_id()
